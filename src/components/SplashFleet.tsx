@@ -19,12 +19,22 @@ const STAGE_FILL = 0.66;
 /** Seconds each hull holds the stage. Five hulls fit the ~2.6s splash window. */
 const SLOT_SECONDS = 0.5;
 
-/** Share of a slot spent flying in / flying out. */
-const ENTER_FRACTION = 0.3;
-const EXIT_FRACTION = 0.3;
+/**
+ * Share of a slot spent handing the stage over. The outgoing hull flies out while
+ * the incoming one flies in, and both finish together: the old hull is fully
+ * off-stage on the same frame the new one lands centred.
+ */
+const HANDOFF_FRACTION = 0.34;
 
-/** How far off-stage (in visible widths) a hull starts and ends its pass. */
-const SLIDE_FRACTION = 0.85;
+/** Extra world units past the frame edge so a hull is fully gone before release. */
+const OFFSTAGE_MARGIN = 24;
+
+/**
+ * Local units the plume shader can push past the flame geometry's bounds
+ * (`aT * uThrust * 6` at the preview throttle, plus the length scale). Bounding
+ * boxes are measured on the undeformed geometry, so this is added by hand.
+ */
+const FLAME_STRETCH_PAD = 6;
 
 /**
  * Seconds before its slot that a hull is built. Building costs a frame, so it is
@@ -41,6 +51,13 @@ interface FleetEntry {
   spanY: number;
   offsetX: number;
   offsetY: number;
+  /**
+   * Worst-case local distance from the group origin to the hull silhouette in
+   * the horizontal plane, i.e. the swept radius of the turntable. The hull spins
+   * around its origin, not around its bounding-box centre, so this is what
+   * decides when it has actually left the frame.
+   */
+  radiusXZ: number;
   scale: number;
 }
 
@@ -127,6 +144,13 @@ export const SplashFleet: React.FC = () => {
         // is recentred in the frame rather than pivoting around its pivot point.
         offsetX: (box.max.x + box.min.x) / 2,
         offsetY: (box.max.y + box.min.y) / 2,
+        // Furthest bounding-box corner from the spin axis, padded for the plume
+        // stretch the shader adds on top of the flame geometry.
+        radiusXZ:
+          Math.hypot(
+            Math.max(Math.abs(box.min.x), Math.abs(box.max.x)),
+            Math.max(Math.abs(box.min.z), Math.abs(box.max.z))
+          ) + FLAME_STRETCH_PAD,
         scale: 1
       };
       rescale(entry);
@@ -168,6 +192,24 @@ export const SplashFleet: React.FC = () => {
     let elapsed = 0;
 
     const cycleSeconds = FLEET.length * SLOT_SECONDS;
+    const handoffSeconds = SLOT_SECONDS * HANDOFF_FRACTION;
+
+    /**
+     * Distance the hull must travel for its own silhouette to clear the frame,
+     * so it is never seen popping in or out inside the visible stage.
+     */
+    const offstageX = (entry: FleetEntry): number =>
+      visibleWidth / 2 +
+      // Swept radius of the turntable plus the recentring shift place() applies,
+      // so the trailing thruster is clear of the edge at any rotation angle.
+      (entry.radiusXZ + Math.abs(entry.offsetX)) * entry.scale +
+      OFFSTAGE_MARGIN;
+
+    /** Places a hull horizontally/vertically, recentred on its bounding box. */
+    const place = (entry: FleetEntry, slideX: number, lift: number, bob: number): void => {
+      entry.ship.group.position.x = slideX - entry.offsetX * entry.scale;
+      entry.ship.group.position.y = lift + bob - entry.offsetY * entry.scale;
+    };
 
     const tick = (now: number): void => {
       frame = requestAnimationFrame(tick);
@@ -178,43 +220,60 @@ export const SplashFleet: React.FC = () => {
       // Loops so the stage never goes empty if the splash outlasts one pass.
       const cycleTime = elapsed % cycleSeconds;
       const current = Math.min(FLEET.length - 1, Math.floor(cycleTime / SLOT_SECONDS));
-      const slotT = (cycleTime - current * SLOT_SECONDS) / SLOT_SECONDS;
-
-      // Pre-build the next hull mid-pass, then let the finished one go.
+      const slotTime = cycleTime - current * SLOT_SECONDS;
       const upcoming = (current + 1) % FLEET.length;
-      const needsPrebuild = SLOT_SECONDS - (cycleTime - current * SLOT_SECONDS) <= PREBUILD_LEAD;
+
+      // The handoff occupies the tail of each slot. The next hull is built a touch
+      // earlier still, so the build frame is not paid on the cut itself.
+      const timeLeft = SLOT_SECONDS - slotTime;
+      const inHandoff = timeLeft <= handoffSeconds;
+      const needsPrebuild = timeLeft <= Math.max(PREBUILD_LEAD, handoffSeconds);
 
       for (let i = 0; i < FLEET.length; i++) {
-        if (i === current) continue;
-        if (needsPrebuild && i === upcoming) continue;
+        if (i === current || (needsPrebuild && i === upcoming)) continue;
         release(i);
       }
 
       const entry = entries[current] ?? build(current);
-      if (needsPrebuild && !entries[upcoming]) build(upcoming);
-
-      const { ship } = entry;
-      ship.setVisible(true);
-
-      // Slide in from the left, hold centred, slide out to the right.
-      let slideX = 0;
-      let lift = 0;
-      if (slotT < ENTER_FRACTION) {
-        const p = easeOutCubic(slotT / ENTER_FRACTION);
-        slideX = (1 - p) * -visibleWidth * SLIDE_FRACTION;
-        lift = (1 - p) * -visibleHeight * 0.12;
-      } else if (slotT > 1 - EXIT_FRACTION) {
-        const p = (slotT - (1 - EXIT_FRACTION)) / EXIT_FRACTION;
-        const eased = p * p;
-        slideX = eased * visibleWidth * SLIDE_FRACTION;
-        lift = eased * visibleHeight * 0.12;
-      }
+      const nextEntry = needsPrebuild ? entries[upcoming] ?? build(upcoming) : entries[upcoming];
 
       const bob = Math.sin(elapsed * 1.8) * 3;
-      ship.group.position.x = slideX - entry.offsetX * entry.scale;
-      ship.group.position.y = lift + bob - entry.offsetY * entry.scale;
 
-      ship.updatePreview(dt, 0.9);
+      // Very first hull of the very first pass has no predecessor to hand off from,
+      // so it flies in on its own over one handoff window.
+      const isIntro = elapsed < handoffSeconds;
+
+      if (inHandoff) {
+        // p = 0 at the start of the handoff, 1 exactly on the cut. The outgoing hull
+        // reaches fully off-stage at the same instant the incoming lands centred.
+        const p = 1 - timeLeft / handoffSeconds;
+        const outEased = p * p;
+        place(entry, outEased * offstageX(entry), outEased * visibleHeight * 0.12, bob);
+        entry.ship.setVisible(true);
+
+        if (nextEntry) {
+          const inP = easeOutCubic(p);
+          place(
+            nextEntry,
+            -(1 - inP) * offstageX(nextEntry),
+            -(1 - inP) * visibleHeight * 0.12,
+            bob
+          );
+          nextEntry.ship.setVisible(true);
+          nextEntry.ship.updatePreview(dt, 0.9);
+        }
+      } else {
+        if (nextEntry) nextEntry.ship.setVisible(false);
+        if (isIntro) {
+          const inP = easeOutCubic(elapsed / handoffSeconds);
+          place(entry, -(1 - inP) * offstageX(entry), -(1 - inP) * visibleHeight * 0.12, bob);
+        } else {
+          place(entry, 0, 0, bob);
+        }
+        entry.ship.setVisible(true);
+      }
+
+      entry.ship.updatePreview(dt, 0.9);
 
       renderer.render(scene, camera);
     };

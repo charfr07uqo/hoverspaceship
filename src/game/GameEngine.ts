@@ -27,6 +27,7 @@ import { Bounds, DifficultyKey, GameEngineCallbacks, GameState, ModuleType, Ship
 import { Starfield } from './Starfield';
 import { PlayerShip } from './PlayerShip';
 import { ObstaclePair3D } from './AsteroidField';
+import { detectGLPrecision } from './glCapabilities';
 import { Gem3D } from './GemManager';
 import { ParticleSystem } from './ParticleSystem';
 import { EnemyDrone3D } from './EnemyDrone';
@@ -161,6 +162,9 @@ export class GameEngine {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Must happen before any subsystem builds a material: contexts without
+    // fragment `highp` need lighting-free shading at this world scale.
+    detectGLPrecision(this.renderer);
     this.container.appendChild(this.renderer.domElement);
 
     this.initPostProcessing(width, height);

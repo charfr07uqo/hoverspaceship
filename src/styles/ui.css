@@ -614,6 +614,29 @@
   gap: 6px;
 }
 
+.ship-switcher-row {
+  width: 100%;
+  justify-content: center;
+  gap: 12px;
+}
+
+.badge-row-center {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-arrow-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+  transform: none;
+}
+
+.nav-arrow-btn:disabled:hover {
+  background: rgba(255, 255, 255, 0.08);
+  transform: none;
+}
+
 .badge-ship-name {
   font-size: 0.88rem;
   font-weight: 800;
@@ -1196,7 +1219,7 @@
 }
 
 .sim-card {
-  width: min(560px, 96%);
+  width: min(680px, 96%);
   max-height: 88vh;
   overflow: hidden;
   display: flex;
@@ -1214,6 +1237,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 14px;
 }
 
 .sim-title {
@@ -1311,14 +1335,16 @@
 
 .sim-table-scroll {
   overflow-y: auto;
+  overflow-x: hidden;
   border-radius: 12px;
   border: 1px solid rgba(148, 163, 184, 0.16);
 }
 
 .sim-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
-  font-size: 0.74rem;
+  font-size: 0.7rem;
 }
 
 .sim-table th {
@@ -1328,16 +1354,21 @@
   color: #7dd3fc;
   font-weight: 800;
   text-align: left;
-  padding: 8px 10px;
-  letter-spacing: 0.4px;
-  font-size: 0.66rem;
+  padding: 8px 6px;
+  letter-spacing: 0.2px;
+  font-size: 0.62rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sim-table td {
-  padding: 8px 10px;
+  padding: 8px 6px;
   color: #e2e8f0;
   border-top: 1px solid rgba(148, 163, 184, 0.1);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sim-table tbody tr:hover {
@@ -1387,7 +1418,7 @@
 }
 
 .sim-density-track {
-  width: 46px;
+  width: 34px;
   height: 6px;
   border-radius: 4px;
   background: rgba(148, 163, 184, 0.2);
@@ -1732,13 +1763,173 @@
   background: radial-gradient(circle at 50% 50%, #0b1a33 0%, #030712 70%);
   border-radius: 20px;
   opacity: 1;
-  transition: opacity 0.8s ease, transform 0.8s ease;
+  transform: scale(1);
+  filter: blur(0);
 }
 
+/* Warp-out: a short wind-up compression, a bright jump to light speed, then the
+   whole stage rushes past the camera. Keyframed rather than transitioned so the
+   wind-up beat exists at all - a single transition can only ever read as a fade. */
 .splash-screen.splash-exiting {
-  opacity: 0;
-  transform: scale(1.35);
   pointer-events: none;
+  animation: splash-warp-out 1s cubic-bezier(0.55, 0, 0.85, 0.2) both;
+}
+
+@keyframes splash-warp-out {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0) brightness(1);
+  }
+  18% {
+    opacity: 1;
+    /* Wind-up: the stage pulls back a hair before the jump. */
+    transform: scale(0.94);
+    filter: blur(0) brightness(1.15);
+  }
+  38% {
+    opacity: 1;
+    transform: scale(1.12);
+    filter: blur(1px) brightness(1.9);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3.2);
+    filter: blur(18px) brightness(1.2);
+  }
+}
+
+/* Streaks stretch out and blow past the frame as the jump fires, so the exit
+   reads as travelling rather than dissolving. */
+.splash-exiting .splash-warp {
+  animation: splash-streaks-out 1s cubic-bezier(0.5, 0, 0.8, 0.2) both;
+}
+
+@keyframes splash-streaks-out {
+  0% {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.4);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(4);
+  }
+}
+
+/* The hulls lead the exit: they punch forward past the camera ahead of the
+   backdrop instead of scaling with it. */
+.splash-exiting .splash-fleet {
+  animation: splash-fleet-out 0.72s cubic-bezier(0.45, 0, 0.7, 0.2) both;
+}
+
+@keyframes splash-fleet-out {
+  0% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.2) translateY(-6%);
+  }
+}
+
+/* Title and chrome drop out early and quickly, clearing the frame before the
+   backdrop's own rush so the two do not smear together. */
+.splash-exiting .splash-title,
+.splash-exiting .splash-tagline,
+.splash-exiting .splash-loader {
+  animation: splash-text-out 0.42s ease-in both;
+}
+
+@keyframes splash-text-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+/* Home menu arriving out of the jump. The backdrop settles over the splash's 1s
+   window, then the panels land one after another. */
+.menu-warp-in {
+  animation: menu-warp-in 1s cubic-bezier(0.16, 0.9, 0.2, 1) both;
+}
+
+@keyframes menu-warp-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.14);
+    filter: blur(10px) brightness(1.5);
+  }
+  45% {
+    opacity: 1;
+    filter: blur(3px) brightness(1.15);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0) brightness(1);
+  }
+}
+
+/* Staggered panel entrances. The delays run past the 1s backdrop window, which
+   is why the intro class is held for a little longer than the splash exit. */
+.menu-warp-in > .title-top-bar,
+.menu-warp-in > .title-header,
+.menu-warp-in > .showcase-info-container {
+  animation: menu-panel-in 0.62s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+.menu-warp-in > .title-top-bar {
+  animation-delay: 0.44s;
+}
+
+.menu-warp-in > .title-header {
+  animation-delay: 0.52s;
+}
+
+/* The showcase viewport is deliberately not animated: the engine measures that
+   rect to place the live 3D hull, and moving it would drag the ship with it. */
+.menu-warp-in > .showcase-info-container {
+  animation-delay: 0.68s;
+}
+
+@keyframes menu-panel-in {
+  0% {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu-warp-in,
+  .menu-warp-in > .title-top-bar,
+  .menu-warp-in > .title-header,
+  .menu-warp-in > .showcase-info-container,
+  .splash-screen.splash-exiting,
+  .splash-exiting .splash-warp,
+  .splash-exiting .splash-fleet,
+  .splash-exiting .splash-title,
+  .splash-exiting .splash-tagline,
+  .splash-exiting .splash-loader {
+    animation: none;
+  }
+
+  .splash-screen.splash-exiting {
+    opacity: 0;
+    transition: opacity 0.3s linear;
+  }
 }
 
 /* Radial warp streaks */

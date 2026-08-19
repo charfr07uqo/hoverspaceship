@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Bounds, DifficultyConfig, DifficultyKey } from '../types/game';
 import { PlayerShip } from './PlayerShip';
+import { isLowPrecisionGL } from './glCapabilities';
 
 export type AsteroidShapeType = 'craggy' | 'oblong' | 'crystal' | 'smooth' | 'boulder';
 
@@ -109,7 +110,12 @@ function applyRockShader(mat: THREE.MeshStandardMaterial, rimColor: THREE.Color,
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
          // Fresnel rim: bright at grazing angles, invisible face-on.
-         float rimNdv = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
+         // vViewPosition is pre-scaled before normalize(): its magnitude is in
+         // the hundreds at this world scale, and squaring that overflows fp16 on
+         // mediump-only contexts, which would make the term saturate to 1 and
+         // wash the whole rock in the rim colour. Scaling does not change the
+         // direction, so highp output is identical.
+         float rimNdv = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition * 0.002)), 0.0, 1.0);
          gl_FragColor.rgb += uRimColor * pow(rimNdv, 3.0) * 0.8;`
       );
   };
@@ -125,7 +131,7 @@ function applyRockShader(mat: THREE.MeshStandardMaterial, rimColor: THREE.Color,
 type RockFinish = 'crystal' | 'rock';
 
 interface SharedRockMaterial {
-  material: THREE.MeshStandardMaterial;
+  material: THREE.MeshStandardMaterial | THREE.MeshBasicMaterial;
   /** Mutated in place so the live shader uniform tracks the sector theme. */
   rimColor: THREE.Color;
   wireMaterial: THREE.LineBasicMaterial;
@@ -150,21 +156,29 @@ function getSharedRockMaterial(finish: RockFinish, themeColorHex: number): Share
   const isCrystal = finish === 'crystal';
   const rimColor = new THREE.Color(themeColorHex).multiplyScalar(0.5);
 
-  const material = new THREE.MeshStandardMaterial({
-    // White base: the rock's own hue arrives through vertex colours, which the
-    // standard shader multiplies into the diffuse term.
-    color: 0xffffff,
-    roughness: isCrystal ? 0.35 : 0.92,
-    metalness: isCrystal ? 0.65 : 0.12,
-    flatShading: isCrystal,
-    vertexColors: true,
-    // Emissive cannot ride on vertex colours, so it is a neutral cool tone for
-    // the whole field rather than a per-rock hue. At these intensities the
-    // difference is not readable.
-    emissive: new THREE.Color(0x2f3a4a),
-    emissiveIntensity: isCrystal ? 0.22 : 0.06
-  });
-  applyRockShader(material, rimColor, `rockRim_${finish}`);
+  const material = isLowPrecisionGL()
+    ? // No fragment highp: three's lighting chunks cannot survive this world
+      // scale (see glCapabilities), so skip lighting entirely. The hull shape
+      // still reads because generateGeometry bakes a directional shading term
+      // into the vertex colours on these devices.
+      new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true })
+    : new THREE.MeshStandardMaterial({
+        // White base: the rock's own hue arrives through vertex colours, which
+        // the standard shader multiplies into the diffuse term.
+        color: 0xffffff,
+        roughness: isCrystal ? 0.35 : 0.92,
+        metalness: isCrystal ? 0.65 : 0.12,
+        flatShading: isCrystal,
+        vertexColors: true,
+        // Emissive cannot ride on vertex colours, so it is a neutral cool tone
+        // for the whole field rather than a per-rock hue. At these intensities
+        // the difference is not readable.
+        emissive: new THREE.Color(0x2f3a4a),
+        emissiveIntensity: isCrystal ? 0.22 : 0.06
+      });
+  if (material instanceof THREE.MeshStandardMaterial) {
+    applyRockShader(material, rimColor, `rockRim_${finish}`);
+  }
 
   // Neon accent lines share the same fate: one material for the whole field.
   const wireMaterial = new THREE.LineBasicMaterial({
@@ -179,6 +193,14 @@ function getSharedRockMaterial(finish: RockFinish, themeColorHex: number): Share
   sharedRockMaterials.set(finish, entry);
   return entry;
 }
+
+/**
+ * Direction of the scene's DirectionalLight (GameEngine positions it at
+ * 100, 200, 300), in view space terms close enough for baking. Only used on
+ * lighting-free contexts, where the diffuse term has to be pre-computed into
+ * vertex colours instead.
+ */
+const BAKED_LIGHT_DIR = new THREE.Vector3(100, 200, 300).normalize();
 
 /** Palette the per-rock base colour is drawn from and baked into vertex colours. */
 const ROCK_COLORS = [0x334155, 0x3f2a4d, 0x1e3a5f, 0x4a3520, 0x2f4738];
@@ -255,6 +277,9 @@ export class ProceduralAsteroid3D {
     const seed = Math.random() * 100;
     // Feature scale: bigger rocks get proportionally similar-sized lumps
     const freq = 3.2 / baseRadius;
+    // On contexts without fragment highp the rocks are drawn unlit, so the
+    // diffuse falloff has to be baked in here instead.
+    const bakeLighting = isLowPrecisionGL();
 
     /**
      * Radially displaces every vertex by coherent fBm noise plus a second,
@@ -292,8 +317,24 @@ export class ProceduralAsteroid3D {
         // Multiplied by the rock's base colour, which the shared white material
         // then passes straight through to the diffuse term.
         const cavity = THREE.MathUtils.clamp(lump * 0.5 + 0.5, 0, 1);
-        const shade = 0.62 + cavity * 0.55;
-        const warm = 0.62 + cavity * 0.62;
+        let shade = 0.62 + cavity * 0.55;
+        let warm = 0.62 + cavity * 0.62;
+
+        // Lighting-free fallback: fold a lambert term plus an ambient floor into
+        // the vertex colour, using the vertex's own outward direction as a stand
+        // -in for its normal (fine for a near-spherical hull). Without this the
+        // rock would draw as one solid silhouette on mediump-only devices.
+        if (bakeLighting) {
+          const dirLen = v.length() || 1;
+          const lambert = Math.max(
+            0,
+            (v.x * BAKED_LIGHT_DIR.x + v.y * BAKED_LIGHT_DIR.y + v.z * BAKED_LIGHT_DIR.z) / dirLen
+          );
+          const lit = 0.5 + lambert * 1.45;
+          shade *= lit;
+          warm *= lit;
+        }
+
         colors[i * 3] = warm * baseColor.r;
         colors[i * 3 + 1] = shade * baseColor.g;
         colors[i * 3 + 2] = shade * 0.98 * baseColor.b;

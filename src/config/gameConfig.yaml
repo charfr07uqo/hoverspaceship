@@ -203,7 +203,7 @@ ships:
   viper:
     name: Nebula Viper
     tagline: Compact Micro Interceptor
-    cost: 20
+    cost: 60
     sizeScale: 0.7
     speed: 8.0
     smoothness: 0.18
@@ -216,7 +216,7 @@ ships:
   titan:
     name: Titan Dreadnought
     tagline: Heavy Armored Cruiser
-    cost: 45
+    cost: 135
     sizeScale: 1.25
     speed: 5.5
     smoothness: 0.08
@@ -232,7 +232,7 @@ ships:
   phantom:
     name: Pulse Oracle
     tagline: True-Sight Warp Core
-    cost: 75
+    cost: 225
     sizeScale: 0.92
     speed: 7.5
     smoothness: 0.11
@@ -248,7 +248,7 @@ ships:
   valkyrie:
     name: Solar Valkyrie
     tagline: Legendary Solar Flagship
-    cost: 120
+    cost: 360
     sizeScale: 1.06
     speed: 8.6
     smoothness: 0.16

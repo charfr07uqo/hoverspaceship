@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { DIFFICULTY_SETTINGS, SHIP_COLORS } from './constants/gameConfig';
 import { soundManager } from './audio/soundManager';
 import { GameCanvas } from './components/GameCanvas';
 import { HUD } from './components/HUD';
 import { StartScreen } from './components/StartScreen';
-import { SplashScreen } from './components/SplashScreen';
+import { SplashScreen, SPLASH_EXIT_MS } from './components/SplashScreen';
 import { HangarScreen } from './components/HangarScreen';
 import { GameOverScreen } from './components/GameOverScreen';
 import { ShopScreen } from './components/ShopScreen';
@@ -13,10 +13,45 @@ import { GameEngine } from './game/GameEngine';
 import './styles/index.css';
 import './styles/ui.css';
 
+/**
+ * Extra time the menu warp-in runs past the splash warp-out, covering the
+ * staggered panel entrances that land after the backdrop has settled.
+ */
+const MENU_INTRO_TAIL_MS = 500;
+
 export const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('START');
   const [menuMode, setMenuMode] = useState<'HOME' | 'HANGAR'>('HOME');
   const [showSplash, setShowSplash] = useState<boolean>(true);
+  // Drives the 1s home-menu warp-in that runs underneath the splash warp-out.
+  const [menuIntro, setMenuIntro] = useState<boolean>(false);
+
+  const menuIntroTimerRef = useRef<number | null>(null);
+
+  // Stable so it does not restart the splash timers when App re-renders.
+  const handleSplashExitStart = useCallback(() => {
+    if (menuIntroTimerRef.current !== null) {
+      window.clearTimeout(menuIntroTimerRef.current);
+    }
+    setMenuIntro(true);
+    // Dropped once the warp-in has played out; leaving the class on would keep
+    // the animation attached to the menu.
+    menuIntroTimerRef.current = window.setTimeout(() => {
+      menuIntroTimerRef.current = null;
+      setMenuIntro(false);
+    }, SPLASH_EXIT_MS + MENU_INTRO_TAIL_MS);
+  }, []);
+
+  const handleSplashFinish = useCallback(() => setShowSplash(false), []);
+
+  useEffect(
+    () => () => {
+      if (menuIntroTimerRef.current !== null) {
+        window.clearTimeout(menuIntroTimerRef.current);
+      }
+    },
+    []
+  );
 
   const [currentDifficulty, setCurrentDifficulty] = useState<DifficultyKey>('normal');
   const [currentShipColor, setCurrentShipColor] = useState<ShipColorKey>('blue');
@@ -317,11 +352,14 @@ export const App: React.FC = () => {
         {/* Main Home Screen */}
         <StartScreen
           isVisible={gameState === 'START' && menuMode === 'HOME'}
+          isIntroAnimating={menuIntro}
           onStart={handleStartGame}
           onOpenHangar={() => setMenuMode('HANGAR')}
           currentDifficulty={currentDifficulty}
           onSelectDifficulty={handleSelectDifficulty}
           currentShipModel={currentShipModel}
+          onSelectShipModel={handleSelectShipModel}
+          unlockedShips={unlockedShips}
           currentShipColor={currentShipColor}
           totalGems={totalGems}
           isFullscreen={isFullscreen}
@@ -375,7 +413,8 @@ export const App: React.FC = () => {
 
         <SplashScreen
           isVisible={showSplash}
-          onFinish={() => setShowSplash(false)}
+          onExitStart={handleSplashExitStart}
+          onFinish={handleSplashFinish}
         />
       </div>
     </div>
