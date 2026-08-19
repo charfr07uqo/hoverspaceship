@@ -1,0 +1,308 @@
+# =============================================================================
+# HoverSpaceship — Central Game Configuration
+# -----------------------------------------------------------------------------
+# Every ship stat, module stat, level parameter, difficulty setting, and tuning
+# coefficient lives here. Edit these values to rebalance the game without
+# touching any TypeScript. All values are loaded at startup by
+# src/constants/gameConfig.ts.
+#
+# Color values are given as hex strings (e.g. "#38bdf8"); their numeric form
+# (colorHex / themeColorHex) is derived automatically in code.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Level / sector progression
+# ---------------------------------------------------------------------------
+level:
+  # Level 1 duration in seconds.
+  baseDurationSec: 15
+  # Hard cap: no sector ever lasts longer than this (seconds).
+  maxDurationSec: 60
+  # Piecewise progression: starting from baseDurationSec, each subsequent
+  # sector adds `step` seconds until the running duration reaches `upTo`,
+  # then the next stage takes over. The running value is clamped to each
+  # stage's `upTo` so durations land on clean numbers.
+  #   15 -> +2 up to 25 -> +3 up to 30 -> +5 up to 60 (max)
+  durationStages:
+    - upTo: 25
+      step: 2
+    - upTo: 30
+      step: 3
+    - upTo: 60
+      step: 5
+
+# ---------------------------------------------------------------------------
+# Enemy interceptor spawning per sector level
+# ---------------------------------------------------------------------------
+enemy:
+  # No enemies spawn before this level.
+  startLevel: 2
+  # Enemy count at startLevel.
+  startCount: 2
+  # Hard cap on the number of enemies in any single sector.
+  countCap: 10
+  # Level at which the enemy count reaches countCap. The count ramps linearly
+  # from startCount (at startLevel) to countCap (at capLevel), then stays capped.
+  capLevel: 15
+  # Enemy variant types. `standard` always spawns; the others unlock at their
+  # unlockLevel and each has a spawnChance (0-1) of replacing a standard drone.
+  # sizeMultiplier / speedMultiplier are applied on top of the base drone stats.
+  variants:
+    heavy:
+      # Bigger, slightly slower interceptors. Unlocks at level 5.
+      label: Heavy
+      icon: "🛑"
+      unlockLevel: 5
+      spawnChance: 0.30
+      sizeMultiplier: 1.6
+      speedMultiplier: 0.85
+      accentColor: "#fb923c"
+    scout:
+      # Half-size, 30% faster interceptors. Unlocks at level 10.
+      label: Scout
+      icon: "⚡"
+      unlockLevel: 10
+      spawnChance: 0.30
+      sizeMultiplier: 0.5
+      speedMultiplier: 1.3
+      accentColor: "#a855f7"
+
+# ---------------------------------------------------------------------------
+# Moving asteroids — after this level, some obstacle formations drift up and
+# down. Movers scroll relatively slowly at first and reach max vertical speed
+# by maxSpeedLevel, in very small per-level increments. A moving formation
+# carries fewer rocks (countScale), lowering the max asteroids on screen.
+# ---------------------------------------------------------------------------
+movingAsteroids:
+  # Movers only start appearing AFTER this level (i.e. level > unlockLevel).
+  unlockLevel: 5
+  # Chance (0-1) that an eligible formation is a mover once unlocked.
+  spawnChance: 0.4
+  # Base vertical drift speed (world units / frame) = the "1x" reference.
+  baseSpeed: 0.3
+  # Speed multiplier the level after unlock (1x = baseSpeed).
+  startMultiplier: 1
+  # Speed multiplier once maxSpeedLevel is reached (3x = 3 * baseSpeed).
+  maxMultiplier: 3
+  # Level at which movers reach maxMultiplier. Ramps linearly between.
+  maxSpeedLevel: 30
+  # How far (world units) a mover drifts from its spawn line before turning back.
+  travelRange: 90
+  # Multiplier applied to a moving formation's asteroid count (fewer rocks).
+  countScale: 0.55
+  # Per-difficulty speed multiplier layered on top of the level ramp.
+  difficultyMultipliers:
+    easy: 1.0
+    normal: 1.1
+    hard: 1.2
+    exhard: 1.3
+
+# ---------------------------------------------------------------------------
+# Bomb gems — disguised gems that morph into bombs. Colliding with one is
+# harmful (breaks the shield, or is fatal without one).
+# ---------------------------------------------------------------------------
+bomb:
+  # No bombs spawn before this level.
+  startLevel: 3
+  # Chance (percent) that a spawned gem is a bomb at startLevel.
+  baseChancePct: 10
+  # Added chance (percent) per subsequent level.
+  chanceIncrementPct: 1
+  # Hard cap on the bomb chance (percent).
+  maxChancePct: 25
+
+# ---------------------------------------------------------------------------
+# Ship module addons (in-run only; purchased from the Shop with gems)
+# ---------------------------------------------------------------------------
+modules:
+  # Maximum tier any module can reach.
+  maxTier: 5
+  # Power Generator: delay (seconds) before a broken shield regenerates, per tier.
+  shieldRegenDelaysSec: [20, 18, 15, 12, 10]
+  # Auto Cannon: reload time (seconds) between shots, per tier.
+  autoCannonReloadSec: [20, 18, 15, 12, 10]
+  # Scanner Array: extra viewing distance (percent) revealed ahead, per tier.
+  # Each tier widens the horizontal view and peels back the right-side fog of
+  # war without changing the vertical framing.
+  scannerExtraDistancePct: [5, 10, 15, 20, 25]
+  # Gem cost to purchase each successive tier (index 0 = cost to reach tier 1).
+  upgradeCosts: [20, 30, 45, 65, 90]
+  # Presentation metadata for the shop UI.
+  meta:
+    powerGen:
+      name: Power Generator
+      icon: "🛡️"
+      blurb: Regenerates your reflect shield after it breaks.
+      unit: s regen
+    autoCannon:
+      name: Auto Cannon
+      icon: "🔫"
+      blurb: Automatically targets and destroys enemy interceptors.
+      unit: s reload
+    zoomScanner:
+      name: Scanner Array
+      icon: "🛰️"
+      blurb: Widens your sensor range, burning back the fog of war ahead.
+      unit: "% range"
+
+# ---------------------------------------------------------------------------
+# Difficulty & progression scaling coefficients
+# ---------------------------------------------------------------------------
+difficultyAlgorithm:
+  # Score interval required for a speed increase.
+  scoreStepForSpeed: 10
+  # Speed bonus multiplier applied per score step.
+  scoreSpeedMultiplier: 0.04
+  # Speed bonus added per sector level.
+  levelSpeedBonus: 0.06
+  # Obstacle gap reduction per sector level.
+  levelGapReduction: 4
+  # Spawn-interval tightening (frames) per sector level.
+  levelSpawnIntervalReduction: 2
+  # Score-based spawn-interval tightening factor.
+  scoreSpawnReductionFactor: 0.6
+
+# ---------------------------------------------------------------------------
+# Level simulation / preview coefficients
+# ---------------------------------------------------------------------------
+simulation:
+  # Approximate frame rate used to estimate obstacle counts.
+  framesPerSec: 60
+  # Tightest possible obstacle spawn interval (matches the clamp in GameEngine).
+  minSpawnInterval: 55
+
+# ---------------------------------------------------------------------------
+# Ship models (stats + hangar presentation)
+# ---------------------------------------------------------------------------
+ships:
+  dart:
+    name: Spectre Dart
+    tagline: Standard Recon Scout
+    cost: 0
+    sizeScale: 1.0
+    speed: 7.0
+    smoothness: 0.13
+    sizeLabel: 1.0x Standard
+    speedLabel: 7.0 Mach
+    reactivityLabel: High (0.13)
+    sizeStars: 3
+    speedStars: 3
+    reactivityStars: 3
+  viper:
+    name: Nebula Viper
+    tagline: Compact Micro Interceptor
+    cost: 20
+    sizeScale: 0.82
+    speed: 8.0
+    smoothness: 0.18
+    sizeLabel: 0.82x Micro
+    speedLabel: 8.0 Mach
+    reactivityLabel: Ultra (0.18)
+    sizeStars: 5
+    speedStars: 4
+    reactivityStars: 5
+  titan:
+    name: Titan Dreadnought
+    tagline: Heavy Armored Cruiser
+    cost: 45
+    sizeScale: 1.25
+    speed: 5.5
+    smoothness: 0.08
+    sizeLabel: 1.25x Heavy
+    speedLabel: 5.5 Mach
+    reactivityLabel: Steady (0.08)
+    sizeStars: 1
+    speedStars: 1
+    reactivityStars: 1
+  phantom:
+    name: Pulse Phantom
+    tagline: Warp-Core Experimental
+    cost: 75
+    sizeScale: 0.92
+    speed: 7.5
+    smoothness: 0.11
+    sizeLabel: 0.92x Compact
+    speedLabel: 7.5 Mach
+    reactivityLabel: Fluid (0.11)
+    sizeStars: 4
+    speedStars: 3
+    reactivityStars: 2
+  valkyrie:
+    name: Solar Valkyrie
+    tagline: Legendary Solar Flagship
+    cost: 120
+    sizeScale: 1.06
+    speed: 8.6
+    smoothness: 0.16
+    sizeLabel: 1.06x Flagship
+    speedLabel: 8.6 Mach
+    reactivityLabel: Hyper (0.16)
+    sizeStars: 2
+    speedStars: 5
+    reactivityStars: 4
+
+# ---------------------------------------------------------------------------
+# Difficulty settings (themeColorHex is derived from themeColor)
+# ---------------------------------------------------------------------------
+difficulties:
+  easy:
+    label: EASY
+    baseSpeed: 1.6
+    speedIncrement: 0.04
+    baseGap: 260
+    minGap: 210
+    oscillateChance: 0.0
+    spawnInterval: 160
+    themeColor: "#22c55e"
+    themeGlow: rgba(34, 197, 94, 0.4)
+  normal:
+    label: NORMAL
+    baseSpeed: 2.1
+    speedIncrement: 0.06
+    baseGap: 235
+    minGap: 185
+    oscillateChance: 0.2
+    spawnInterval: 140
+    themeColor: "#38bdf8"
+    themeGlow: rgba(56, 189, 248, 0.4)
+  hard:
+    label: HARD
+    baseSpeed: 2.6
+    speedIncrement: 0.08
+    baseGap: 210
+    minGap: 160
+    oscillateChance: 0.4
+    spawnInterval: 120
+    themeColor: "#ef4444"
+    themeGlow: rgba(239, 68, 68, 0.4)
+  exhard:
+    label: EX-HARD
+    baseSpeed: 3.2
+    speedIncrement: 0.10
+    baseGap: 190
+    minGap: 140
+    oscillateChance: 0.6
+    spawnInterval: 105
+    themeColor: "#c084fc"
+    themeGlow: rgba(192, 132, 252, 0.5)
+
+# ---------------------------------------------------------------------------
+# Ship color options (colorHex is derived from color)
+# ---------------------------------------------------------------------------
+shipColors:
+  blue:
+    label: Blue
+    color: "#38bdf8"
+    glow: rgba(56, 189, 248, 0.55)
+  green:
+    label: Green
+    color: "#22c55e"
+    glow: rgba(34, 197, 94, 0.55)
+  red:
+    label: Red
+    color: "#ef4444"
+    glow: rgba(239, 68, 68, 0.55)
+  pink:
+    label: Pink
+    color: "#ec4899"
+    glow: rgba(236, 72, 153, 0.55)
