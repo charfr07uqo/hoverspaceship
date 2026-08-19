@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   AUTO_CANNON_RELOAD_SEC,
@@ -18,7 +19,8 @@ import {
   MODULE_UPGRADE_COSTS,
   SCANNER_EXTRA_DISTANCE_PCT,
   SHIELD_REGEN_DELAYS_SEC,
-  SHIP_COLORS
+  SHIP_COLORS,
+  SHIPS_CONFIG
 } from '../constants/gameConfig';
 import { soundManager } from '../audio/soundManager';
 import { Bounds, DifficultyKey, GameEngineCallbacks, GameState, ModuleType, ShipColorKey, ShipModelId } from '../types/game';
@@ -52,7 +54,9 @@ export class GameEngine {
   private menuBgSpawnTimer = 0;
   private showcaseAnchorTimer = 999;
 
-  // 3-Second Hyperspace Warp level transition
+  // Hyperspace warp level transition. 5 seconds, which is also the window the
+  // shop is available in, and the span the ship's lunge is fitted to.
+  private static readonly WARP_DURATION = 5.0;
   private warpTimer = 0;
 
   // 3-Second Death explosion sequence
@@ -73,6 +77,13 @@ export class GameEngine {
   private autoCannonTimer = 0; // seconds elapsed since last shot
   private projectiles: Projectile3D[] = [];
 
+  /**
+   * Module-granted True Sight tier. 0 = the ability comes from the hull only.
+   * Wired up so a future shop module just has to call setTrueVisionModuleLevel()
+   * and every live/spawning bomb picks the change up immediately.
+   */
+  private trueVisionModuleLevel = 0;
+
   private keys: Record<string, boolean> = {};
   private pointerY: number | null = null;
   private isPointerActive = false;
@@ -85,6 +96,8 @@ export class GameEngine {
   private composer!: EffectComposer;
   private bloomPass!: UnrealBloomPass;
   private gradePass!: ShaderPass;
+  /** Only created on a WebGL1 fallback context, where render-target MSAA is unavailable. */
+  private smaaPass: SMAAPass | null = null;
   private ambientLight!: THREE.AmbientLight;
   private dirLight!: THREE.DirectionalLight;
   private themeLight!: THREE.PointLight;
@@ -182,7 +195,20 @@ export class GameEngine {
    * fringe, vignette, animated grain) -> tone map + sRGB output.
    */
   private initPostProcessing(width: number, height: number): void {
-    this.composer = new EffectComposer(this.renderer);
+    // The renderer's own `antialias: true` does nothing here: every pass draws
+    // into an offscreen render target, not the antialiased default framebuffer.
+    // So the composer gets an explicitly multisampled target, which is what
+    // actually smooths the hull silhouettes and the neon edge lines.
+    //
+    // HalfFloat also keeps the additive flames and bloom from banding before the
+    // grade/tone-map pass reads them back.
+    const drawing = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    const renderTarget = new THREE.WebGLRenderTarget(drawing.x, drawing.y, {
+      type: THREE.HalfFloatType,
+      samples: 4
+    });
+
+    this.composer = new EffectComposer(this.renderer, renderTarget);
     this.composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.composer.setSize(width, height);
 
@@ -241,6 +267,14 @@ export class GameEngine {
       `
     });
     this.composer.addPass(this.gradePass);
+
+    // MSAA on the render target needs WebGL2. On a WebGL1 fallback context the
+    // `samples` option is ignored, so post-process SMAA stands in for it.
+    if (!this.renderer.capabilities.isWebGL2) {
+      const pr = this.renderer.getPixelRatio();
+      this.smaaPass = new SMAAPass(width * pr, height * pr);
+      this.composer.addPass(this.smaaPass);
+    }
 
     this.composer.addPass(new OutputPass());
   }
@@ -349,6 +383,10 @@ export class GameEngine {
     const height = this.container.clientHeight || 720;
 
     this.renderer.setSize(width, height);
+    if (this.smaaPass) {
+      const pr = this.renderer.getPixelRatio();
+      this.smaaPass.setSize(width * pr, height * pr);
+    }
     if (this.composer) {
       this.composer.setSize(width, height);
       this.bloomPass.setSize(width, height);
@@ -425,6 +463,42 @@ export class GameEngine {
     if (this.player) {
       this.player.setShipModel(modelId);
     }
+    // Hull specials changed: re-evaluate True Sight on anything already in flight.
+    this.syncTrueVision();
+    this.emitModuleStatus();
+  }
+
+  /**
+   * True Sight is on when either the equipped hull grants it or a module tier is
+   * installed. Single source of truth for the ability, so adding the module later
+   * is just a matter of raising trueVisionModuleLevel.
+   */
+  public get trueVisionActive(): boolean {
+    const ship = SHIPS_CONFIG[this.currentShipModel] || SHIPS_CONFIG.dart;
+    return ship.trueVision || this.trueVisionModuleLevel > 0;
+  }
+
+  /** Installs/removes a module-granted True Sight tier (reserved for the shop). */
+  public setTrueVisionModuleLevel(level: number): void {
+    this.trueVisionModuleLevel = Math.max(0, level);
+    this.syncTrueVision();
+    this.emitModuleStatus();
+  }
+
+  /** Pushes the resolved True Sight state onto every bomb currently on screen. */
+  private syncTrueVision(): void {
+    const active = this.trueVisionActive;
+    this.gems.forEach((gem) => gem.setTrueVision(active));
+  }
+
+  /**
+   * Float-text label for a shield impact: the caller's "break" copy when the
+   * shell was destroyed, or a "held" message naming the charges still left.
+   */
+  private shieldImpactLabel(breakLabel: string, shieldDown: boolean): string {
+    if (shieldDown) return breakLabel;
+    const left = this.player.shieldCharges;
+    return `🛡️ SHIELD HELD! ${left} CHARGE${left === 1 ? '' : 'S'} LEFT`;
   }
 
   public setHangarMode(isHangar: boolean): void {
@@ -507,7 +581,7 @@ export class GameEngine {
   }
 
   private emitModuleStatus(): void {
-    if (!this.callbacks.onModuleStatus) return;
+    if (!this.callbacks.onModuleStatus || !this.player) return;
 
     let shieldRegenProgress = this.player.hasShield ? 1 : 0;
     if (this.powerGenLevel > 0 && !this.player.hasShield) {
@@ -527,7 +601,10 @@ export class GameEngine {
       zoomScannerLevel: this.zoomScannerLevel,
       shieldActive: this.player.hasShield,
       shieldRegenProgress,
-      cannonProgress
+      cannonProgress,
+      shieldCharges: this.player.shieldCharges,
+      maxShieldCharges: this.player.maxShieldCharges,
+      trueVisionActive: this.trueVisionActive
     });
   }
 
@@ -564,7 +641,7 @@ export class GameEngine {
     );
     this.projectiles.push(proj);
     this.player.triggerCannonFire();
-    soundManager.playFlySound();
+    soundManager.playCannonSound();
   }
 
   private clearProjectiles(): void {
@@ -589,7 +666,10 @@ export class GameEngine {
     this.zoomScannerLevel = 0;
     this.shieldRegenTimer = 0;
     this.autoCannonTimer = 0;
+    this.trueVisionModuleLevel = 0;
     this.player.setModuleLevels(0, 0);
+    // Drop any module-granted shield charges back to the hull's own rating.
+    this.player.setBonusShieldCharges(0);
     // Reset the viewport back to the default (un-widened) framing.
     this.calculateBounds();
 
@@ -646,6 +726,7 @@ export class GameEngine {
 
   public triggerDeath(): void {
     soundManager.playHitSound();
+    soundManager.stopThruster();
     this.triggerScreenShake(26);
     this.setGameState('DYING');
     this.deathTimer = 3.0; // 3-second explosion sequence
@@ -671,7 +752,7 @@ export class GameEngine {
     soundManager.playGemSound();
     this.triggerScreenShake(14);
     this.setGameState('WARPING');
-    this.warpTimer = 5.0; // 5-second spacewarp pause (shop is available during this window)
+    this.warpTimer = GameEngine.WARP_DURATION; // shop is available during this window
     this.clearProjectiles();
 
     this.starfield.setWarping(true);
@@ -759,7 +840,7 @@ export class GameEngine {
 
       if (isSafe) {
         const isBomb = Math.random() * 100 < getBombChancePct(this.level);
-        const gem = new Gem3D(this.scene, pos.x, pos.y, isBomb);
+        const gem = new Gem3D(this.scene, pos.x, pos.y, isBomb, this.trueVisionActive);
         this.gems.push(gem);
       }
     }
@@ -936,17 +1017,29 @@ export class GameEngine {
 
         if (obs.collidesWith(this.player)) {
           if (this.player.hasShield) {
-            // KH2 Reflect: Shield absorbs impact, obliterating both the asteroid and the shield
-            this.player.breakShield();
+            // KH2 Reflect: the shell obliterates the asteroid and spends a charge.
+            // Hulls rated for more than one charge survive and stay deployed.
+            const shieldDown = this.player.absorbShieldHit();
             soundManager.playHitSound();
-            this.triggerScreenShake(20);
+            this.triggerScreenShake(shieldDown ? 20 : 12);
 
             const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
-            this.particleSystem.createReflectShatter(this.player.x, this.player.y, 0, shipConfig.colorHex, 40);
+            this.particleSystem.createReflectShatter(
+              this.player.x,
+              this.player.y,
+              0,
+              shipConfig.colorHex,
+              shieldDown ? 40 : 22
+            );
             this.particleSystem.createDebris(obs.x, this.player.y, 0, 0x94a3b8, 22);
 
             if (this.callbacks.onFloatText) {
-              this.callbacks.onFloatText('⚡ REFLECT SHIELD BREAK!', this.player.x + 30, this.player.y + 20, '#38bdf8');
+              this.callbacks.onFloatText(
+                this.shieldImpactLabel('⚡ REFLECT SHIELD BREAK!', shieldDown),
+                this.player.x + 30,
+                this.player.y + 20,
+                '#38bdf8'
+              );
             }
 
             obs.destroy();
@@ -981,11 +1074,22 @@ export class GameEngine {
             this.particleSystem.createDebris(gem.x, gemY, 0, 0xff0033, 20);
 
             if (this.player.hasShield) {
-              this.player.breakShield();
+              const shieldDown = this.player.absorbShieldHit();
               const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
-              this.particleSystem.createReflectShatter(this.player.x, this.player.y, 0, shipConfig.colorHex, 40);
+              this.particleSystem.createReflectShatter(
+                this.player.x,
+                this.player.y,
+                0,
+                shipConfig.colorHex,
+                shieldDown ? 40 : 22
+              );
               if (this.callbacks.onFloatText) {
-                this.callbacks.onFloatText('💣 BOMB! SHIELD DESTROYED!', this.player.x + 30, this.player.y + 20, '#ef4444');
+                this.callbacks.onFloatText(
+                  this.shieldImpactLabel('💣 BOMB! SHIELD DESTROYED!', shieldDown),
+                  this.player.x + 30,
+                  this.player.y + 20,
+                  '#ef4444'
+                );
               }
               continue;
             } else {
@@ -1041,13 +1145,19 @@ export class GameEngine {
 
         if (drone.collidesWith(this.player)) {
           if (this.player.hasShield) {
-            // Shield hit against enemy: breaks shield, vaporizes enemy drone!
-            this.player.breakShield();
+            // Shield hit against enemy: spends a charge, vaporizes enemy drone!
+            const shieldDown = this.player.absorbShieldHit();
             soundManager.playHitSound();
-            this.triggerScreenShake(20);
+            this.triggerScreenShake(shieldDown ? 20 : 12);
 
             const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
-            this.particleSystem.createReflectShatter(this.player.x, this.player.y, 0, shipConfig.colorHex, 40);
+            this.particleSystem.createReflectShatter(
+              this.player.x,
+              this.player.y,
+              0,
+              shipConfig.colorHex,
+              shieldDown ? 40 : 22
+            );
             this.particleSystem.createExplosion(drone.x, drone.y, 0, 0xef4444, 30);
             this.particleSystem.createDebris(drone.x, drone.y, 0, 0xff0055, 18);
 
@@ -1055,7 +1165,14 @@ export class GameEngine {
             this.enemiesSurvived++;
             if (this.callbacks.onScoreUpdate) this.callbacks.onScoreUpdate(this.score);
             if (this.callbacks.onFloatText) {
-              this.callbacks.onFloatText('💥 ENEMY DESTROYED! +3', this.player.x + 30, this.player.y + 20, '#f87171');
+              this.callbacks.onFloatText(
+                shieldDown
+                  ? '💥 ENEMY DESTROYED! +3'
+                  : `💥 ENEMY DESTROYED! +3 (🛡️ ${this.player.shieldCharges} LEFT)`,
+                this.player.x + 30,
+                this.player.y + 20,
+                '#f87171'
+              );
             }
 
             drone.destroy();
@@ -1148,8 +1265,15 @@ export class GameEngine {
       this.emitModuleStatus();
       this.emitThreatCount();
     } else if (this.gameState === 'WARPING') {
-      // 3-Second Hyperspace Warp Animation
+      // Hyperspace Warp Animation
       this.warpTimer -= dt;
+      // Normalised warp progress drives the ship's lunge to the right edge and
+      // its deceleration back to station.
+      this.player.warpProgress = THREE.MathUtils.clamp(
+        1 - this.warpTimer / GameEngine.WARP_DURATION,
+        0,
+        1
+      );
       this.player.update(this.gameState, this.keys, this.pointerY, this.isPointerActive, this.bounds, this.gameSpeed);
 
       // Fast clear of remaining obstacles and enemies off screen

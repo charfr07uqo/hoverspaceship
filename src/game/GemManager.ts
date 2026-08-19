@@ -4,6 +4,11 @@ import { PlayerShip } from './PlayerShip';
 // Frames per morph phase (~60fps => ~1 second per phase toggle).
 const MORPH_PHASE_FRAMES = 60;
 
+/** Warm amber point light used while the pickup looks like a gem. */
+const GEM_LIGHT_COLOR = 0xf59e0b;
+/** Hot red point light used while a bomb is showing its true form. */
+const BOMB_LIGHT_COLOR = 0xff1a1a;
+
 export class Gem3D {
   private scene: THREE.Scene;
   public x: number;
@@ -29,11 +34,19 @@ export class Gem3D {
   private morphFrame = 0;
   private bombPhase = false; // true = showing the red bomb form
 
-  constructor(scene: THREE.Scene, x: number, y: number, isBomb = false) {
+  /**
+   * True Sight: when on, a bomb is locked into its revealed red form and never
+   * cycles back into the gem disguise. Granted by the hull's special today and
+   * by a module later, and can be flipped at any time via setTrueVision().
+   */
+  private trueVision = false;
+
+  constructor(scene: THREE.Scene, x: number, y: number, isBomb = false, trueVision = false) {
     this.scene = scene;
     this.x = x;
     this.y = y;
     this.isBomb = isBomb;
+    this.trueVision = trueVision;
     this.angle = Math.random() * Math.PI * 2;
 
     this.group = new THREE.Group();
@@ -136,11 +149,43 @@ export class Gem3D {
     }
 
     // Point light — warm amber for gems, hot red when a bomb reveals itself
-    this.light = new THREE.PointLight(0xf59e0b, 1.5, 45);
+    this.light = new THREE.PointLight(GEM_LIGHT_COLOR, 1.5, 45);
     this.group.add(this.light);
 
     this.group.position.set(this.x, this.y, 0);
     this.scene.add(this.group);
+
+    // Apply True Sight up front so a bomb spawned under the effect never gets a
+    // single frame of disguise.
+    this.applyRevealState();
+  }
+
+  /**
+   * Toggle True Sight on this pickup. Safe to call mid-flight, so a ship swap or
+   * a module purchase can reveal (or re-hide) bombs that are already on screen.
+   */
+  public setTrueVision(on: boolean): void {
+    if (this.trueVision === on) return;
+    this.trueVision = on;
+    this.applyRevealState();
+  }
+
+  /**
+   * Pushes the current disguise/revealed decision onto the meshes and light.
+   * Under True Sight the bomb form is pinned on; otherwise the morph cycle owns
+   * visibility and this just re-syncs to whatever phase it is in.
+   */
+  private applyRevealState(): void {
+    if (!this.isBomb || !this.bombGroup) return;
+
+    if (this.trueVision) {
+      this.bombPhase = true;
+      this.morphFrame = 0;
+    }
+
+    this.gemGroup.visible = !this.bombPhase;
+    this.bombGroup.visible = this.bombPhase;
+    this.light.color.setHex(this.bombPhase ? BOMB_LIGHT_COLOR : GEM_LIGHT_COLOR);
   }
 
   public update(gameSpeed: number): void {
@@ -156,13 +201,16 @@ export class Gem3D {
 
     if (this.isBomb && this.bombGroup) {
       // Toggle between gem disguise and revealed bomb roughly every second.
-      this.morphFrame++;
-      if (this.morphFrame >= MORPH_PHASE_FRAMES) {
-        this.morphFrame = 0;
-        this.bombPhase = !this.bombPhase;
-        this.gemGroup.visible = !this.bombPhase;
-        this.bombGroup.visible = this.bombPhase;
-        this.light.color.setHex(this.bombPhase ? 0xff1a1a : 0xf59e0b);
+      // True Sight skips the toggle entirely, pinning the bomb form on.
+      if (!this.trueVision) {
+        this.morphFrame++;
+        if (this.morphFrame >= MORPH_PHASE_FRAMES) {
+          this.morphFrame = 0;
+          this.bombPhase = !this.bombPhase;
+          this.gemGroup.visible = !this.bombPhase;
+          this.bombGroup.visible = this.bombPhase;
+          this.light.color.setHex(this.bombPhase ? BOMB_LIGHT_COLOR : GEM_LIGHT_COLOR);
+        }
       }
 
       if (this.bombPhase) {

@@ -5,7 +5,10 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
-    port: 3000,
+    port: 9876,
+    // Fail loudly instead of silently sliding to another port, which would leave
+    // the .vscode launch profiles pointing at nothing.
+    strictPort: true,
     open: false
   }
 });

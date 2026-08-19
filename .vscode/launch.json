@@ -5,49 +5,55 @@
       "name": "Launch Chrome (Debug: 500 Gems)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:3000?gems=500",
+      "url": "http://localhost:9876?gems=500",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     },
     {
       "name": "Launch Chrome (Debug: 100 Gems)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:3000?gems=100",
+      "url": "http://localhost:9876?gems=100",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     },
     {
       "name": "Launch Chrome (Debug: 9999 Gems)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:3000?gems=9999",
+      "url": "http://localhost:9876?gems=9999",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     },
     {
       "name": "Launch Chrome (Normal Play)",
       "type": "chrome",
       "request": "launch",
-      "url": "http://localhost:3000",
+      "url": "http://localhost:9876",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     },
     {
       "name": "Launch Edge (Debug: 500 Gems)",
       "type": "msedge",
       "request": "launch",
-      "url": "http://localhost:3000?gems=500",
+      "url": "http://localhost:9876?gems=500",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     },
     {
       "name": "Launch Edge (Normal Play)",
       "type": "msedge",
       "request": "launch",
-      "url": "http://localhost:3000",
+      "url": "http://localhost:9876",
       "webRoot": "${workspaceFolder}",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "preLaunchTask": "npm: dev"
     }
   ]
 }

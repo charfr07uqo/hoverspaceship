@@ -16,6 +16,8 @@ interface GameCanvasProps {
   totalGems: number;
   zoomScannerLevel?: number;
   isHangarMode?: boolean;
+  /** Hides the fog of war while the spacewarp animation plays. */
+  isWarping?: boolean;
   onScoreUpdate: (score: number) => void;
   onGemsUpdate: (runGems: number, totalGems: number) => void;
   onGameOver: (summary: GameOverSummary) => void;
@@ -34,6 +36,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   totalGems,
   zoomScannerLevel = 0,
   isHangarMode = false,
+  isWarping = false,
   onScoreUpdate,
   onGemsUpdate,
   onGameOver,
@@ -159,7 +162,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     <div className="canvas-container" ref={containerRef}>
       {fogFraction > 0.001 && (
         <div
-          className="fog-of-war"
+          className={`fog-of-war ${isWarping ? 'is-hidden' : ''}`}
           style={{ width: `${fogFraction * 100}%` }}
           aria-hidden="true"
         />

@@ -4,10 +4,27 @@
     {
       "type": "npm",
       "script": "dev",
-      "problemMatcher": [],
       "label": "npm: dev",
       "detail": "vite",
-      "isBackground": true
+      "isBackground": true,
+      // Vite never exits, so the task has to report "ready" via its output or
+      // VS Code will block the launch forever waiting for the task to finish.
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [
+          {
+            "regexp": "^$",
+            "file": 1,
+            "location": 2,
+            "message": 3
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".*VITE.*",
+          "endsPattern": ".*Local:.*"
+        }
+      }
     },
     {
       "type": "npm",

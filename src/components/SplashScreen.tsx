@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { SplashFleet } from './SplashFleet';
 
 interface SplashScreenProps {
   isVisible: boolean;
@@ -53,7 +54,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
       </div>
 
       <div className="splash-content">
-        <div className="splash-ship">🚀</div>
+        <SplashFleet />
         <h1 className="splash-title">HOVER SPACESHIP</h1>
         <p className="splash-tagline">INITIALIZING FLIGHT SYSTEMS</p>
         <div className="splash-loader">

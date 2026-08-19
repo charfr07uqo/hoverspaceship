@@ -173,7 +173,19 @@ simulation:
 
 # ---------------------------------------------------------------------------
 # Ship models (stats + hangar presentation)
+#
+# Per-ship specials are opt-in: any ship that omits a special key inherits the
+# baseline from `shipDefaults` below.
+#   shieldCharges - impacts the reflect shell can absorb before it breaks.
+#                   Designed to be upgradable later (a module can add charges
+#                   on top of the hull's own rating).
+#   trueVision    - disguised bombs never morph back into their gem disguise.
+#                   Also intended to become a purchasable module perk.
 # ---------------------------------------------------------------------------
+shipDefaults:
+  shieldCharges: 1
+  trueVision: false
+
 ships:
   dart:
     name: Spectre Dart
@@ -192,10 +204,10 @@ ships:
     name: Nebula Viper
     tagline: Compact Micro Interceptor
     cost: 20
-    sizeScale: 0.82
+    sizeScale: 0.7
     speed: 8.0
     smoothness: 0.18
-    sizeLabel: 0.82x Micro
+    sizeLabel: 0.70x Micro
     speedLabel: 8.0 Mach
     reactivityLabel: Ultra (0.18)
     sizeStars: 5
@@ -214,9 +226,12 @@ ships:
     sizeStars: 1
     speedStars: 1
     reactivityStars: 1
+    # Special: reinforced reflect shell soaks an extra impact.
+    shieldCharges: 2
+    special: Reinforced Reflect — shield soaks 2 hits before breaking
   phantom:
-    name: Pulse Phantom
-    tagline: Warp-Core Experimental
+    name: Pulse Oracle
+    tagline: True-Sight Warp Core
     cost: 75
     sizeScale: 0.92
     speed: 7.5
@@ -227,6 +242,9 @@ ships:
     sizeStars: 4
     speedStars: 3
     reactivityStars: 2
+    # Special: onboard scanner locks bombs into their revealed red form.
+    trueVision: true
+    special: True Sight — disguised bombs stay revealed as bombs
   valkyrie:
     name: Solar Valkyrie
     tagline: Legendary Solar Flagship

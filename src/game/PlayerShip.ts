@@ -4,6 +4,39 @@ import { Bounds, GameState, ShipModelId } from '../types/game';
 import { SHIPS_CONFIG } from '../constants/gameConfig';
 
 /**
+ * Global dimmer for every layer of the Reflect shield (energy bubble, crystal
+ * plates, shard outlines, and sparkle flares). Lowering this makes the whole
+ * shell more see-through in one place instead of retuning each shader.
+ */
+const SHIELD_OPACITY_SCALE = 0.6;
+
+/**
+ * Tuned opacity of the shell's shard outlines at full charge, before
+ * SHIELD_OPACITY_SCALE and the remaining-charge factor are applied.
+ */
+const SHIELD_WIRE_BASE_OPACITY = 0.18;
+
+/** Base hull collision radius at sizeScale 1.0, before the ship model scales it. */
+const HULL_BASE_RADIUS = 11;
+
+/**
+ * Model-space radius the Reflect shell geometry is built at. Both the rendered
+ * dome and the shield's collision radius derive from this single number, so the
+ * hitbox can never drift away from what the player actually sees.
+ */
+const SHIELD_GEOMETRY_RADIUS = 24;
+
+/**
+ * Extra magnification applied to the hangar showcase only, so hulls read large
+ * on the inspection stage. Safe above 1.0 because the hangar hides the shield
+ * shell, which is what constrained the original framing on the title screen.
+ */
+const HANGAR_SHOWCASE_ZOOM = 1.5;
+
+/** Resting scale of the shield group in flight, relative to the ship's sizeScale. */
+const SHIELD_REST_SCALE = 1.18;
+
+/**
  * Adds procedural hull detail to a MeshStandardMaterial: recessed panel lines,
  * a faint brushed-metal streak, and a fresnel rim in the ship's accent colour.
  * This runs on every ship model, so all five hulls gain surface detail without
@@ -57,6 +90,194 @@ function applyHullShader(mat: THREE.MeshStandardMaterial, rimColor: THREE.Color)
   mat.customProgramCacheKey = () => 'hullPanels';
 }
 
+/**
+ * Builds one thruster flame shell.
+ *
+ * The cone is open-ended (no base cap) and rotated so its tip points down -X,
+ * i.e. out the back of the ship. Two extra attributes ride along:
+ *  - `aT`   0 at the nozzle, 1 at the tail tip. Drives the temperature ramp.
+ *  - `aSeed` constant per thruster, so several nozzles on the same hull flicker
+ *            on their own clocks while still sharing one material.
+ */
+function makeFlameGeometry(radius: number, length: number, seed: number): THREE.BufferGeometry {
+  const geo = new THREE.ConeGeometry(radius, length, 28, 14, true);
+  geo.rotateZ(Math.PI / 2);
+
+  const pos = geo.getAttribute('position');
+  const tAttr = new Float32Array(pos.count);
+  const seedAttr = new Float32Array(pos.count);
+  const half = length / 2;
+  for (let i = 0; i < pos.count; i++) {
+    tAttr[i] = Math.min(1, Math.max(0, (half - pos.getX(i)) / length));
+    seedAttr[i] = seed;
+  }
+  geo.setAttribute('aT', new THREE.BufferAttribute(tAttr, 1));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seedAttr, 1));
+  return geo;
+}
+
+/** Shared GLSL: cheap 3D value noise + fbm, used for the flame turbulence. */
+const FLAME_NOISE_GLSL = `
+  float fhash(vec3 p) {
+    return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453123);
+  }
+
+  float fnoise(vec3 p) {
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(
+      mix(mix(fhash(i + vec3(0,0,0)), fhash(i + vec3(1,0,0)), f.x),
+          mix(fhash(i + vec3(0,1,0)), fhash(i + vec3(1,1,0)), f.x), f.y),
+      mix(mix(fhash(i + vec3(0,0,1)), fhash(i + vec3(1,0,1)), f.x),
+          mix(fhash(i + vec3(0,1,1)), fhash(i + vec3(1,1,1)), f.x), f.y),
+      f.z);
+  }
+
+  float ffbm(vec3 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      v += a * fnoise(p);
+      p *= 2.02;
+      a *= 0.5;
+    }
+    return v;
+  }
+`;
+
+const FLAME_VERTEX_GLSL = `
+  attribute float aT;
+  attribute float aSeed;
+
+  uniform float uTime;
+  uniform float uThrust;
+  uniform float uWobble;
+
+  varying float vT;
+  varying float vSeed;
+  varying vec3 vLocal;
+  varying vec3 vNormal;
+  varying vec3 vView;
+
+  ${FLAME_NOISE_GLSL}
+
+  void main() {
+    vT = aT;
+    vSeed = aSeed;
+
+    vec3 p = position;
+
+    // Combustion pulse: the plume necks in near the nozzle and swells further
+    // back, which is what makes a jet read as burning gas rather than a solid cone.
+    float pulse = fnoise(vec3(aT * 3.0, uTime * 3.4 + aSeed * 17.0, aSeed * 5.0)) - 0.5;
+    float swell = 1.0 + pulse * 0.55 * smoothstep(0.05, 0.8, aT) * uWobble;
+
+    // Lateral licking, growing toward the tail where the gas is unconstrained.
+    float sway = smoothstep(0.15, 1.0, aT) * uWobble;
+    float swayY = (fnoise(vec3(aT * 2.4, uTime * 2.6 + aSeed * 9.0, 0.0)) - 0.5) * 2.0;
+    float swayZ = (fnoise(vec3(aT * 2.4, 0.0, uTime * 2.9 + aSeed * 3.0)) - 0.5) * 2.0;
+
+    p.yz *= swell;
+    p.y += swayY * sway * 2.6;
+    p.z += swayZ * sway * 2.6;
+
+    // Harder throttle stretches the plume backward instead of just brightening it.
+    p.x -= aT * uThrust * 6.0;
+
+    vLocal = p;
+    vNormal = normalize(normalMatrix * normal);
+    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+    vView = -mv.xyz;
+    gl_Position = projectionMatrix * mv;
+  }
+`;
+
+/**
+ * Fire fragment shader.
+ *
+ * Temperature runs along the plume: a white-hot throat at the nozzle, then
+ * yellow, orange, and finally a ragged red-to-soot tail. Turbulence is scrolled
+ * backward along -X so the flame visibly streams out of the engine, and it is
+ * folded into the temperature lookup as well as the alpha so the hot and the
+ * torn parts of the flame line up the way they do in a real exhaust.
+ *
+ * `uAccent` only tints the very throat, which keeps the ship-colour identity
+ * without turning the whole plume back into a coloured cone.
+ */
+const FLAME_FRAGMENT_GLSL = `
+  uniform float uTime;
+  uniform vec3 uAccent;
+  uniform float uThrust;
+  uniform float uWarp;
+  uniform float uCore;
+
+  varying float vT;
+  varying float vSeed;
+  varying vec3 vLocal;
+  varying vec3 vNormal;
+  varying vec3 vView;
+
+  ${FLAME_NOISE_GLSL}
+
+  void main() {
+    // Turbulence streaming out the back. Stretched along X so the cells read as
+    // gas filaments rather than blobs.
+    vec3 np = vec3(vLocal.x * 0.10, vLocal.y * 0.26, vLocal.z * 0.26);
+    np.x += uTime * 2.4 + vSeed * 11.0;
+    float turb = ffbm(np);
+    float turbFine = fnoise(np * 3.1 + vec3(uTime * 4.5, 0.0, 0.0));
+
+    // Effective distance along the plume, torn up by the turbulence so the flame
+    // has a broken, licking edge instead of a clean gradient.
+    float t = clamp(vT + (turb - 0.5) * 0.55 + (turbFine - 0.5) * 0.18, 0.0, 1.4);
+
+    // --- Temperature ramp: white -> yellow -> orange -> red -> soot ---
+    vec3 white  = vec3(1.00, 0.98, 0.90);
+    vec3 yellow = vec3(1.00, 0.83, 0.32);
+    vec3 orange = vec3(1.00, 0.45, 0.08);
+    vec3 red    = vec3(0.85, 0.13, 0.02);
+    vec3 soot   = vec3(0.22, 0.03, 0.01);
+
+    vec3 color = mix(white, yellow, smoothstep(0.00, 0.22, t));
+    color = mix(color, orange, smoothstep(0.18, 0.48, t));
+    color = mix(color, red,    smoothstep(0.45, 0.78, t));
+    color = mix(color, soot,   smoothstep(0.75, 1.05, t));
+
+    // Blue-hot stoichiometric throat, tinted with the ship's accent colour so the
+    // hull palette still reads at the nozzle.
+    float throat = 1.0 - smoothstep(0.0, 0.16, vT);
+    color = mix(color, mix(vec3(0.75, 0.90, 1.0), uAccent, 0.55), throat * 0.75);
+
+    // Grazing angles look thicker: the classic trick for faking volume on a shell.
+    float ndv = abs(dot(normalize(vNormal), normalize(vView)));
+    float thickness = pow(1.0 - ndv, 0.55) + 0.25;
+
+    // Fade out along the plume, cut short by the turbulence for a torn tail.
+    float tail = 1.0 - smoothstep(0.35, 1.0, t);
+    float nozzle = smoothstep(0.0, 0.05, vT);
+
+    float alpha = tail * thickness * nozzle;
+    alpha *= 0.55 + turb * 0.75;
+    alpha *= mix(0.55, 1.15, uThrust);
+    alpha *= uCore;
+    alpha *= 1.0 + uWarp * 0.8;
+
+    // Hotter cores get a brightness boost so bloom blows the throat out to white.
+    //
+    // Under warp the throat boost is deliberately pulled back and the gain moved
+    // further down the plume instead: an overexposed throat sits right under the
+    // fuselage, and its bloom halo washes forward over the nose and hides the
+    // ship. This keeps the long torch bright while sparing the hull.
+    float throatBoost = throat * (1.6 - uWarp * 1.05);
+    float plumeBoost = uWarp * 0.9 * smoothstep(0.10, 0.45, vT);
+    color *= 1.0 + throatBoost + plumeBoost;
+
+    if (alpha < 0.01) discard;
+    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+  }
+`;
+
 interface TrailParticle {
   mesh: THREE.Mesh;
   mat: THREE.MeshBasicMaterial;
@@ -70,7 +291,12 @@ export class PlayerShip {
   public group: THREE.Group;
   private shipModelGroup: THREE.Group;
 
-  public radius = 11;
+  /**
+   * Hull collision radius. Only used directly when the Reflect shield is down;
+   * while the shield is up, incoming threats are tested against
+   * `threatCollisionRadius` instead. See `shieldCollisionRadius`.
+   */
+  public radius = HULL_BASE_RADIUS;
   public x = 0;
   public y = 0;
   public z = 145;
@@ -104,8 +330,13 @@ export class PlayerShip {
   private wingMesh!: THREE.Mesh;
   private wingMat!: THREE.MeshStandardMaterial;
   private cockpitMesh!: THREE.Mesh;
+  /** Additive canopy outline. Damped during warp so the nose does not blow out. */
+  private canopyFrameMat: THREE.LineBasicMaterial | null = null;
   private flameMeshes: THREE.Mesh[] = [];
-  private flameMat!: THREE.MeshBasicMaterial;
+  /** Outer, cooler, more turbulent plume envelope. */
+  private flameMat!: THREE.ShaderMaterial;
+  /** Inner white-hot core, drawn tighter and brighter inside the envelope. */
+  private flameCoreMat!: THREE.ShaderMaterial;
   private engineLight!: THREE.PointLight;
   private showcaseSpotLight!: THREE.PointLight;
 
@@ -113,11 +344,24 @@ export class PlayerShip {
   public hasShield = true;
   public isShieldPoweringUp = false;
   public shieldPowerUpProgress = 1.0;
+  /**
+   * Impacts the reflect shell can still absorb. The shell only breaks when this
+   * hits 0, so a hull rated for 2 charges survives its first hit.
+   */
+  public shieldCharges = 1;
+  /** Total charges granted by the current hull (plus any future module bonus). */
+  public maxShieldCharges = 1;
+  /** Extra charges layered on top of the hull rating by modules. */
+  public bonusShieldCharges = 0;
   private shieldGroup: THREE.Group;
   private shieldMesh!: THREE.Mesh;
   private shieldWireframe!: THREE.LineSegments;
   private shieldShaderMat!: THREE.ShaderMaterial;
-  private shieldWireMat!: THREE.LineBasicMaterial;
+  private shieldWireMat!: THREE.ShaderMaterial;
+  private shieldBubbleMat!: THREE.ShaderMaterial;
+  private shieldSparkles: THREE.Sprite[] = [];
+  private shieldTwinkleTime = 0;
+  private shieldSparkleSpin = 0;
 
   private trailParticles: TrailParticle[] = [];
   private trailGeo!: THREE.SphereGeometry;
@@ -141,6 +385,15 @@ export class PlayerShip {
    */
   public showcaseAnchor: { x: number; y: number; scale: number } | null = null;
   public isWarping = false;
+  /**
+   * 0 -> 1 across the warp window, fed by GameEngine from its warp timer. Drives
+   * the hyperspace lunge: the ship accelerates out to the right edge, holds
+   * there at peak speed, then decelerates back to its resting station on the
+   * left before normal play resumes.
+   */
+  public warpProgress = 0;
+  /** Current lunge amount, 0 at station and 1 at the right edge. */
+  private warpSurge = 0;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -169,9 +422,187 @@ export class PlayerShip {
     this.scene.add(this.group);
   }
 
+  /**
+   * Builds the KH2 "Reflect" crystal plate shell.
+   *
+   * The reference effect is not a smooth bubble: it is a Goldberg polyhedron of
+   * chunky hexagonal/pentagonal crystal plates, each one slightly shrunk away
+   * from its neighbours and pushed out by a different amount so the silhouette
+   * reads as overlapping shards of ice rather than a sphere.
+   *
+   * We derive those plates from the dual of a subdivided icosahedron: every
+   * vertex of the icosphere becomes one plate whose corners are the centroids of
+   * the faces touching that vertex (6 corners almost everywhere, 5 at the twelve
+   * original icosahedron vertices).
+   */
+  private buildCrystalPlates(radius: number): {
+    plateGeo: THREE.BufferGeometry;
+    rimGeo: THREE.BufferGeometry;
+  } {
+    const src = new THREE.IcosahedronGeometry(radius, 2);
+    const srcPos = src.getAttribute('position');
+
+    // --- Weld the non-indexed triangle soup so we can walk the topology ---
+    const unique: THREE.Vector3[] = [];
+    const lookup = new Map<string, number>();
+    const faces: number[][] = [];
+    for (let i = 0; i < srcPos.count; i += 3) {
+      const tri: number[] = [];
+      for (let k = 0; k < 3; k++) {
+        const v = new THREE.Vector3().fromBufferAttribute(srcPos, i + k);
+        const key = `${v.x.toFixed(3)}|${v.y.toFixed(3)}|${v.z.toFixed(3)}`;
+        let idx = lookup.get(key);
+        if (idx === undefined) {
+          idx = unique.length;
+          unique.push(v);
+          lookup.set(key, idx);
+        }
+        tri.push(idx);
+      }
+      faces.push(tri);
+    }
+    src.dispose();
+
+    const faceCentroids = faces.map((f) =>
+      new THREE.Vector3()
+        .add(unique[f[0]])
+        .add(unique[f[1]])
+        .add(unique[f[2]])
+        .multiplyScalar(1 / 3)
+        .normalize()
+        .multiplyScalar(radius)
+    );
+
+    const vertexFaces: number[][] = unique.map(() => []);
+    faces.forEach((f, fi) => f.forEach((vi) => vertexFaces[vi].push(fi)));
+
+    const platePos: number[] = [];
+    const plateNormal: number[] = [];
+    const plateEdge: number[] = []; // 0 at plate centre, 1 at plate rim
+    const plateRand: number[] = []; // per-plate random, drives shimmer + depth
+    const rimPos: number[] = [];
+
+    // Deterministic hash so the plate layout is identical every run.
+    const hash = (n: number) => {
+      const s = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+      return s - Math.floor(s);
+    };
+
+    const tangent = new THREE.Vector3();
+    const bitangent = new THREE.Vector3();
+
+    unique.forEach((vertex, vi) => {
+      const ring = vertexFaces[vi];
+      if (ring.length < 3) return;
+
+      const normal = vertex.clone().normalize();
+
+      // Stable tangent frame for angular sorting of the plate corners.
+      tangent
+        .set(0, 1, 0)
+        .cross(normal)
+        .normalize();
+      if (tangent.lengthSq() < 1e-6) tangent.set(1, 0, 0);
+      bitangent.copy(normal).cross(tangent).normalize();
+
+      const corners = ring
+        .map((fi) => faceCentroids[fi])
+        .slice()
+        .sort((a, b) => {
+          const aa = Math.atan2(a.dot(bitangent), a.dot(tangent));
+          const bb = Math.atan2(b.dot(bitangent), b.dot(tangent));
+          return aa - bb;
+        });
+
+      const centre = new THREE.Vector3();
+      corners.forEach((c) => centre.add(c));
+      centre.multiplyScalar(1 / corners.length);
+
+      // Each plate floats at its own height and shrinks a touch so the dark
+      // gaps between shards stay visible - that separation is what makes the
+      // effect read as crystal instead of glass.
+      const r = hash(vi);
+      const lift = 1 + 0.012 + r * 0.055;
+      const shrink = 0.82 + hash(vi + 97) * 0.1;
+
+      const shaped = corners.map((c) =>
+        c.clone().sub(centre).multiplyScalar(shrink).add(centre).multiplyScalar(lift)
+      );
+      const shapedCentre = centre.clone().multiplyScalar(lift);
+
+      // Fan-triangulate from the plate centre; aEdge interpolates outward so the
+      // fragment shader can put a hot rim on every shard.
+      for (let i = 0; i < shaped.length; i++) {
+        const a = shaped[i];
+        const b = shaped[(i + 1) % shaped.length];
+
+        platePos.push(shapedCentre.x, shapedCentre.y, shapedCentre.z);
+        platePos.push(a.x, a.y, a.z);
+        platePos.push(b.x, b.y, b.z);
+
+        plateEdge.push(0, 1, 1);
+        for (let k = 0; k < 3; k++) {
+          plateNormal.push(normal.x, normal.y, normal.z);
+          plateRand.push(r);
+        }
+
+        rimPos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+      }
+    });
+
+    const plateGeo = new THREE.BufferGeometry();
+    plateGeo.setAttribute('position', new THREE.Float32BufferAttribute(platePos, 3));
+    plateGeo.setAttribute('normal', new THREE.Float32BufferAttribute(plateNormal, 3));
+    plateGeo.setAttribute('aEdge', new THREE.Float32BufferAttribute(plateEdge, 1));
+    plateGeo.setAttribute('aRand', new THREE.Float32BufferAttribute(plateRand, 1));
+
+    const rimGeo = new THREE.BufferGeometry();
+    rimGeo.setAttribute('position', new THREE.Float32BufferAttribute(rimPos, 3));
+
+    return { plateGeo, rimGeo };
+  }
+
+  /** Four-point star flare used for the sparkles that pop around the shell. */
+  private createSparkleTexture(): THREE.Texture {
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d')!;
+    const c = size / 2;
+
+    const core = ctx.createRadialGradient(c, c, 0, c, c, size * 0.16);
+    core.addColorStop(0, 'rgba(255,255,255,1)');
+    core.addColorStop(0.4, 'rgba(215,240,255,0.55)');
+    core.addColorStop(1, 'rgba(160,220,255,0)');
+    ctx.fillStyle = core;
+    ctx.fillRect(0, 0, size, size);
+
+    // Long thin cross streaks, the signature of the KH2 sparkle
+    ctx.translate(c, c);
+    for (let i = 0; i < 4; i++) {
+      const grad = ctx.createLinearGradient(0, 0, c, 0);
+      grad.addColorStop(0, 'rgba(255,255,255,0.95)');
+      grad.addColorStop(0.25, 'rgba(220,245,255,0.35)');
+      grad.addColorStop(1, 'rgba(190,235,255,0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(0, -size * 0.035);
+      ctx.lineTo(c, 0);
+      ctx.lineTo(0, size * 0.035);
+      ctx.closePath();
+      ctx.fill();
+      ctx.rotate(Math.PI / 2);
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
   // Build the KH2 Reflect Crystal Geodesic Shield with per-facet variation shader
   private buildReflectShield(): void {
-    const shieldRadius = 24;
+    const shieldRadius = SHIELD_GEOMETRY_RADIUS;
 
     // Translucent energy dome fill: a smooth, welded (indexed) sphere with shared
     // vertices and smooth normals. Using a flat-shaded, non-indexed mesh here caused
@@ -184,11 +615,12 @@ export class PlayerShip {
     // where it is edge-on (fresnel rim) or where its hex energy lattice catches
     // the light. Everything is deliberately dim because bloom amplifies additive
     // surfaces heavily - a bright body here renders as an opaque white ball.
-    this.shieldShaderMat = new THREE.ShaderMaterial({
+    this.shieldBubbleMat = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uColor: { value: new THREE.Color(this.shipColorHex) },
-        uBaseOpacity: { value: 0.012 }
+        uBaseOpacity: { value: 0.012 },
+        uOpacityScale: { value: SHIELD_OPACITY_SCALE }
       },
       vertexShader: `
         varying vec3 vNormal;
@@ -209,6 +641,7 @@ export class PlayerShip {
         uniform float uTime;
         uniform vec3 uColor;
         uniform float uBaseOpacity;
+        uniform float uOpacityScale;
 
         varying vec3 vNormal;
         varying vec3 vViewPosition;
@@ -243,11 +676,13 @@ export class PlayerShip {
           // Slow vertical recharge sweep travelling up the shell
           float sweep = smoothstep(0.9, 1.0, sin(vLocalPosition.y * 0.10 - uTime * 1.2));
 
+          // The crystal plates now carry the pattern, so the inner bubble is kept
+          // to a faint containment glow that fills the gaps between the shards.
           float body = uBaseOpacity;
-          float rim = fresnel * 0.16;
-          float grid = latticeMask * 0.10;
-          float flow = sweep * (0.05 + latticeMask * 0.12);
-          float finalOpacity = clamp(body + rim + grid + flow, 0.0, 0.24);
+          float rim = fresnel * 0.13;
+          float grid = latticeMask * 0.035;
+          float flow = sweep * (0.03 + latticeMask * 0.05);
+          float finalOpacity = clamp(body + rim + grid + flow, 0.0, 0.18) * uOpacityScale;
 
           // Stay in the ship's accent hue; only the very tip of the rim goes hot,
           // which keeps bloom from washing the whole dome to white.
@@ -266,25 +701,225 @@ export class PlayerShip {
       blending: THREE.AdditiveBlending
     });
 
-    this.shieldMesh = new THREE.Mesh(fillGeo, this.shieldShaderMat);
+    const bubbleMesh = new THREE.Mesh(fillGeo, this.shieldBubbleMat);
+    this.shieldGroup.add(bubbleMesh);
+
+    // --- Crystal plate shell: the actual KH2 Reflect look ---
+    const { plateGeo, rimGeo } = this.buildCrystalPlates(shieldRadius);
+
+    this.shieldShaderMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uColor: { value: new THREE.Color(this.shipColorHex) },
+        uForm: { value: 1 },
+        // Ship-forward axis expressed in shield-local space. The shield group spins
+        // for shimmer, so this is refreshed every frame to keep the bright face
+        // pinned to the direction of travel instead of rotating with the shell.
+        uForward: { value: new THREE.Vector3(1, 0, 0) },
+        uOpacityScale: { value: SHIELD_OPACITY_SCALE }
+      },
+      vertexShader: `
+        attribute float aEdge;
+        attribute float aRand;
+
+        varying float vEdge;
+        varying float vRand;
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        varying vec3 vDir;
+
+        void main() {
+          vEdge = aEdge;
+          vRand = aRand;
+          // Model-space outward direction: lets the fragment shader know which
+          // shards face the ship's forward (+X) travel direction.
+          vDir = normalize(position);
+          vNormal = normalize(normalMatrix * normal);
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vViewPosition = -mvPosition.xyz;
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uColor;
+        uniform float uForm;
+        uniform vec3 uForward;
+        uniform float uOpacityScale;
+
+        varying float vEdge;
+        varying float vRand;
+        varying vec3 vNormal;
+        varying vec3 vViewPosition;
+        varying vec3 vDir;
+
+        void main() {
+          vec3 normal = normalize(vNormal);
+          vec3 viewDir = normalize(vViewPosition);
+          float ndv = abs(dot(normal, viewDir));
+
+          // Plates tilted away from the camera catch the light along their faces,
+          // exactly like the ice shards ringing the dome in the reference.
+          float sheen = pow(1.0 - ndv, 2.2);
+
+          // Hot bevel on every shard border.
+          float bevel = smoothstep(0.42, 1.0, vEdge);
+          float border = smoothstep(0.86, 1.0, vEdge);
+
+          // Each plate shimmers on its own clock so the shell crackles with light
+          // instead of pulsing as one object.
+          float twinkle = 0.72 + 0.28 * sin(uTime * 2.1 + vRand * 43.0);
+
+          // Staggered materialisation: shards flash in one after another.
+          float form = clamp(uForm * 1.7 - vRand * 0.7, 0.0, 1.0);
+          float flashIn = smoothstep(0.0, 0.45, form);
+          float igniting = (1.0 - smoothstep(0.35, 1.0, form)) * flashIn;
+
+          // Per-plate tint: some shards lean slightly icy blue, others slightly
+          // golden, but both stay close to white so the shell still reads as
+          // frosted crystal rather than a coloured gel.
+          float tintPick = fract(vRand * 7.31 + 0.23);
+          vec3 blueTint = vec3(0.80, 0.90, 1.0);
+          vec3 goldTint = vec3(1.0, 0.93, 0.74);
+          vec3 plateTint = mix(blueTint, goldTint, smoothstep(0.35, 0.65, tintPick));
+
+          // Frosted white body with a faint warm centre, cooling to the ship's
+          // accent hue at the shard edges.
+          vec3 warm = vec3(1.0, 0.95, 0.86);
+          vec3 cool = mix(uColor, vec3(0.88, 0.97, 1.0), 0.80);
+          vec3 color = mix(warm * 0.85, cool, bevel * 0.75);
+          color += vec3(1.0) * border * 0.85 * twinkle;
+          color += cool * sheen * 0.6;
+          color += vec3(1.0, 0.98, 0.92) * igniting * 1.4;
+          color *= plateTint;
+
+          // Each plate breathes on its own clock, dipping to nearly invisible so
+          // the shell constantly reveals the ship through shifting gaps.
+          float phase = vRand * 61.7 + tintPick * 13.0;
+          float breath = 0.5 + 0.5 * sin(uTime * 1.35 + phase);
+          float faceFade = mix(0.10, 1.0, pow(breath, 1.6));
+
+          // Longitudinal grading along the ship's travel axis. The fully powered
+          // region is a narrow cap on the leading face: a spherical cap covers
+          // 1/5 of the surface at cos(theta) = 0.6, so the plateau starts there
+          // and everything behind it falls off continuously to a nearly
+          // transparent trailing side.
+          float facing = dot(vDir, uForward);
+          float frontCap = smoothstep(0.30, 0.62, facing);
+          float lengthwise = smoothstep(-0.90, 0.30, facing);
+
+          faceFade = mix(faceFade, max(faceFade, 0.60), frontCap);
+          faceFade *= mix(0.07, 1.0, lengthwise);
+
+          float alpha =
+            0.030 +                     // barely-there plate body, keeps the ship readable
+            bevel * 0.085 +
+            border * 0.22 * twinkle +
+            sheen * 0.15;
+
+          alpha *= faceFade;
+          // A touch of extra presence right on the leading cap.
+          alpha *= 1.0 + frontCap * 0.12;
+
+          // Back-facing shards read as the far side of the shell: still present,
+          // but dimmed so they do not double up over the ship.
+          if (!gl_FrontFacing) alpha *= 0.42;
+
+          alpha *= flashIn;
+          alpha *= uOpacityScale;
+
+          gl_FragColor = vec4(color, clamp(alpha, 0.0, 0.8));
+        }
+      `,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.NormalBlending
+    });
+
+    this.shieldMesh = new THREE.Mesh(plateGeo, this.shieldShaderMat);
+    // Plates are unsorted transparent geometry; render after the hull so the ship
+    // shows through them.
+    this.shieldMesh.renderOrder = 3;
     this.shieldGroup.add(this.shieldMesh);
 
-    // Delicate Faceted Geodesic Outline Wireframe (no spikes!) - kept as a separate
-    // low-poly icosahedron so the crystal "reflect" look is preserved on top of the
-    // smooth energy dome.
-    const wireBaseGeo = new THREE.IcosahedronGeometry(shieldRadius, 1);
-    const edgeGeo = new THREE.EdgesGeometry(wireBaseGeo);
-    this.shieldWireMat = new THREE.LineBasicMaterial({
-      color: 0x9fe8ff,
+    // Crisp outline on every hex/pent shard - this is what makes the faceting
+    // legible at small on-screen sizes.
+    // Outlines follow the same front/middle/back falloff as the plates, otherwise
+    // they paint a uniform white cage over the whole sphere and the back never
+    // reads as transparent.
+    this.shieldWireMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uOpacity: { value: SHIELD_WIRE_BASE_OPACITY * SHIELD_OPACITY_SCALE },
+        uForward: { value: new THREE.Vector3(1, 0, 0) }
+      },
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uOpacity;
+        uniform vec3 uForward;
+        varying vec3 vDir;
+
+        void main() {
+          float facing = dot(vDir, uForward);
+          // Matches the plate shader: narrow fully powered cap, continuous falloff.
+          float frontCap = smoothstep(0.30, 0.62, facing);
+          float lengthwise = smoothstep(-0.90, 0.30, facing);
+
+          // Slow travelling shimmer so the mid-band outlines breathe too.
+          float breath = 0.55 + 0.45 * sin(uTime * 1.1 + vDir.y * 3.1 + vDir.z * 2.3);
+          float fade = mix(breath, 1.0, frontCap) * mix(0.06, 1.0, lengthwise);
+
+          // Icy blue away from the leading face, warm gold toward it.
+          vec3 tint = mix(vec3(0.80, 0.90, 1.0), vec3(1.0, 0.95, 0.80), frontCap);
+
+          gl_FragColor = vec4(tint, uOpacity * fade);
+        }
+      `,
       transparent: true,
-      // Very faint - bloom does the rest of the work on these lines
-      opacity: 0.045,
-      linewidth: 1,
       blending: THREE.AdditiveBlending,
       depthWrite: false
     });
-    this.shieldWireframe = new THREE.LineSegments(edgeGeo, this.shieldWireMat);
+    this.shieldWireframe = new THREE.LineSegments(rimGeo, this.shieldWireMat);
+    this.shieldWireframe.renderOrder = 4;
     this.shieldGroup.add(this.shieldWireframe);
+
+    // --- Sparkle flares orbiting the shell ---
+    const sparkleTex = this.createSparkleTexture();
+    for (let i = 0; i < 7; i++) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: sparkleTex,
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.6 * SHIELD_OPACITY_SCALE,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          depthTest: false
+        })
+      );
+      // Spread them over the shell with a golden-angle spiral for even coverage.
+      const t = (i + 0.5) / 7;
+      const phi = Math.acos(1 - 2 * t);
+      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+      sprite.position.set(
+        Math.sin(phi) * Math.cos(theta),
+        Math.cos(phi),
+        Math.sin(phi) * Math.sin(theta)
+      ).multiplyScalar(shieldRadius * 1.02);
+      sprite.scale.setScalar(shieldRadius * 0.5);
+      sprite.renderOrder = 5;
+      sprite.userData.basePos = sprite.position.clone();
+      this.shieldSparkles.push(sprite);
+      this.shieldGroup.add(sprite);
+    }
   }
 
   public setHangarMode(hangar: boolean): void {
@@ -297,21 +932,152 @@ export class PlayerShip {
 
   public setWarping(warping: boolean): void {
     this.isWarping = warping;
+    if (!warping) {
+      this.warpProgress = 0;
+      this.warpSurge = 0;
+    }
+  }
+
+  /**
+   * Shape of the hyperspace lunge over the warp window.
+   *
+   * Three phases, all C0-continuous and starting and ending at 0 so the ship
+   * leaves and rejoins its normal station without a jump:
+   *  - 0.00 -> 0.42  hard acceleration out to the right edge (easeOutCubic, so
+   *                  most of the distance is covered early and it reads as fast)
+   *  - 0.42 -> 0.60  held at the edge at peak speed
+   *  - 0.60 -> 1.00  smooth deceleration back to station (easeInOutSine)
+   */
+  private warpSurgeCurve(p: number): number {
+    if (p <= 0) return 0;
+    if (p < 0.42) {
+      const t = p / 0.42;
+      return 1 - Math.pow(1 - t, 3);
+    }
+    if (p < 0.6) return 1;
+    const t = Math.min(1, (p - 0.6) / 0.4);
+    return 0.5 + 0.5 * Math.cos(Math.PI * t);
+  }
+
+  /**
+   * World-space radius of the Reflect shell when it is actually deployed and
+   * able to intercept something, or `null` when the hull is exposed.
+   *
+   * The radius is read off the live `shieldGroup` scale rather than recomputed,
+   * so it tracks the power-up pop-in (and its easeOutBack overshoot) exactly:
+   * a shell that has only materialised to 30% does not deflect at full size.
+   * Returns `null` in the hangar, where the shell is hidden for inspection.
+   */
+  public get shieldCollisionRadius(): number | null {
+    if (!this.hasShield || this.isHangar) return null;
+    return SHIELD_GEOMETRY_RADIUS * this.shieldGroup.scale.x;
+  }
+
+  /**
+   * Radius that incoming threats (asteroids, enemy drones) should be tested
+   * against. This is the shield shell while it is up, because the shell is what
+   * physically takes the impact, and the bare hull once it has broken.
+   *
+   * Clamped to at least the hull radius so a mid-materialisation shell can never
+   * shrink the player's effective hitbox below the ship itself.
+   */
+  public get threatCollisionRadius(): number {
+    const shieldRadius = this.shieldCollisionRadius;
+    return shieldRadius === null ? this.radius : Math.max(this.radius, shieldRadius);
   }
 
   public triggerShieldPowerUp(): void {
     this.hasShield = true;
+    this.shieldCharges = this.maxShieldCharges;
     this.isShieldPoweringUp = true;
     this.shieldPowerUpProgress = 0;
     if (!this.isHangar) {
       this.shieldGroup.visible = true;
     }
     this.shieldGroup.scale.set(0.01, 0.01, 0.01);
+    // A freshly cast shell is always at full strength.
+    this.applyShieldChargeTint();
+  }
+
+  /**
+   * Recomputes the shell's charge capacity from the current hull rating plus any
+   * module bonus. Pass `refill` to also top the live charges back up (ship swap,
+   * new run); otherwise the remaining charges are only clamped to the new cap.
+   */
+  public refreshShieldCharges(refill: boolean): void {
+    const config = SHIPS_CONFIG[this.shipModelId] || SHIPS_CONFIG.dart;
+    this.maxShieldCharges = Math.max(1, config.shieldCharges + this.bonusShieldCharges);
+    this.shieldCharges = refill
+      ? this.maxShieldCharges
+      : Math.min(this.shieldCharges, this.maxShieldCharges);
+    this.applyShieldChargeTint();
+  }
+
+  /**
+   * Grants extra shield charges on top of the hull's own rating (reserved for a
+   * future upgradable module). Existing charges grow with the new capacity so a
+   * mid-run purchase is felt immediately.
+   */
+  public setBonusShieldCharges(bonus: number): void {
+    const delta = Math.max(0, bonus) - this.bonusShieldCharges;
+    this.bonusShieldCharges = Math.max(0, bonus);
+    this.refreshShieldCharges(false);
+    if (delta > 0 && this.hasShield) {
+      this.shieldCharges = Math.min(this.maxShieldCharges, this.shieldCharges + delta);
+      this.applyShieldChargeTint();
+    }
+  }
+
+  /**
+   * Spends one shield charge against an impact.
+   *
+   * Returns true when that impact destroyed the shell (no charges left), false
+   * when the shell held and is still protecting the ship. Callers use the return
+   * value to decide between "shield break" and "shield held" feedback.
+   */
+  public absorbShieldHit(): boolean {
+    if (!this.hasShield) return true;
+
+    this.shieldCharges = Math.max(0, this.shieldCharges - 1);
+    if (this.shieldCharges > 0) {
+      // Shell held: replay the materialisation pop so the hit reads visually,
+      // and re-tint the remaining layers to show it is running on reserves.
+      this.isShieldPoweringUp = true;
+      this.shieldPowerUpProgress = 0;
+      this.shieldGroup.scale.set(0.01, 0.01, 0.01);
+      this.applyShieldChargeTint();
+      return false;
+    }
+
+    this.breakShield();
+    return true;
   }
 
   public breakShield(): void {
     this.hasShield = false;
+    this.shieldCharges = 0;
     this.shieldGroup.visible = false;
+  }
+
+  /**
+   * Thins the shell as charges are spent so a multi-charge shield visibly
+   * weakens instead of silently soaking hits. Recomputed from the tuned base
+   * opacities every call, so it never compounds across hits.
+   */
+  private applyShieldChargeTint(): void {
+    const strength =
+      this.maxShieldCharges <= 1 ? 1 : Math.max(1, this.shieldCharges) / this.maxShieldCharges;
+    const factor = 0.5 + 0.5 * strength;
+
+    if (this.shieldShaderMat?.uniforms.uOpacityScale) {
+      this.shieldShaderMat.uniforms.uOpacityScale.value = SHIELD_OPACITY_SCALE * factor;
+    }
+    if (this.shieldBubbleMat?.uniforms.uOpacityScale) {
+      this.shieldBubbleMat.uniforms.uOpacityScale.value = SHIELD_OPACITY_SCALE * factor;
+    }
+    if (this.shieldWireMat?.uniforms.uOpacity) {
+      this.shieldWireMat.uniforms.uOpacity.value = SHIELD_WIRE_BASE_OPACITY * SHIELD_OPACITY_SCALE * factor;
+    }
   }
 
   /** Rebuild the auto cannon and power generator attachments for the given tiers. */
@@ -440,7 +1206,11 @@ export class PlayerShip {
     this.sizeScale = config.sizeScale;
     this.speed = config.speed;
     this.smoothness = config.smoothness;
-    this.radius = 11 * config.sizeScale;
+    this.radius = HULL_BASE_RADIUS * config.sizeScale;
+
+    // Shield charges are a hull stat plus any module bonus. Swapping hulls only
+    // happens in the hangar/menu, so re-arming the shell to full is safe here.
+    this.refreshShieldCharges(true);
 
     // Scale shield proportionally to ship size
     const shieldScale = this.sizeScale * 1.15;
@@ -481,6 +1251,8 @@ export class PlayerShip {
       depthWrite: false
     });
     this.cockpitMesh.material = glass;
+    // Remembered so the warp glow damping can restore the correct rest value.
+    this.cockpitMesh.userData.baseEmissive = 0.55;
     old.dispose();
 
     // Thin canopy frame traced from the canopy silhouette
@@ -496,6 +1268,7 @@ export class PlayerShip {
       })
     );
     this.cockpitMesh.add(frame);
+    this.canopyFrameMat = frame.material as THREE.LineBasicMaterial;
   }
 
   /**
@@ -564,6 +1337,55 @@ export class PlayerShip {
     }
   }
 
+  /**
+   * One layer of the exhaust plume. `intensity` scales the layer's opacity
+   * (the inner core is pushed brighter) and `wobble` how much the geometry
+   * deforms (the core stays steadier than the outer envelope).
+   */
+  private createFlameMaterial(intensity: number, wobble: number): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uAccent: { value: new THREE.Color(this.shipColorHex) },
+        uThrust: { value: 0.35 },
+        uWarp: { value: 0 },
+        uCore: { value: intensity },
+        uWobble: { value: wobble }
+      },
+      vertexShader: FLAME_VERTEX_GLSL,
+      fragmentShader: FLAME_FRAGMENT_GLSL,
+      transparent: true,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+  }
+
+  /**
+   * Adds a thruster at `(x, y, z)` as two nested plumes: a wide turbulent
+   * envelope and a short white-hot core. Both are registered in `flameMeshes`
+   * so the existing per-frame pulse scaling drives them together.
+   */
+  private addThruster(x: number, y: number, z: number, radius: number, length: number): void {
+    const seed = this.flameMeshes.length * 1.37 + 0.21;
+
+    const layers: Array<[THREE.BufferGeometry, THREE.ShaderMaterial, number]> = [
+      [makeFlameGeometry(radius, length, seed), this.flameMat, length * 0.42],
+      [makeFlameGeometry(radius * 0.55, length * 0.62, seed + 4.7), this.flameCoreMat, length * 0.26]
+    ];
+
+    for (const [geo, mat, offset] of layers) {
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x - offset, y, z);
+      mesh.renderOrder = 2;
+      // Nozzle anchor, so the plume can be stretched backward without detaching.
+      mesh.userData.nozzleX = x;
+      mesh.userData.offset = offset;
+      this.flameMeshes.push(mesh);
+      this.shipModelGroup.add(mesh);
+    }
+  }
+
   private buildShipMesh(modelId: ShipModelId): void {
     this.hullRimColor = new THREE.Color(this.shipColorHex).multiplyScalar(0.45);
 
@@ -591,12 +1413,8 @@ export class PlayerShip {
     });
     applyHullShader(this.wingMat, this.hullRimColor);
 
-    this.flameMat = new THREE.MeshBasicMaterial({
-      color: this.shipColorHex,
-      transparent: true,
-      opacity: 0.9,
-      blending: THREE.AdditiveBlending
-    });
+    this.flameMat = this.createFlameMaterial(1.0, 1.0);
+    this.flameCoreMat = this.createFlameMaterial(1.35, 0.45);
 
     if (modelId === 'viper') {
       // Dual-fork agile interceptor - smooth tapered hull
@@ -637,18 +1455,8 @@ export class PlayerShip {
       this.shipModelGroup.add(this.cockpitMesh);
 
       // Dual micro thrusters
-      const flameGeo = new THREE.ConeGeometry(3.2, 16, 20);
-      flameGeo.rotateZ(Math.PI / 2);
-
-      const f1 = new THREE.Mesh(flameGeo, this.flameMat);
-      f1.position.set(-18, 2, 3);
-      this.flameMeshes.push(f1);
-      this.shipModelGroup.add(f1);
-
-      const f2 = new THREE.Mesh(flameGeo, this.flameMat);
-      f2.position.set(-18, -2, -3);
-      this.flameMeshes.push(f2);
-      this.shipModelGroup.add(f2);
+      this.addThruster(-10, 2, 3, 3.2, 16);
+      this.addThruster(-10, -2, -3, 3.2, 16);
     } else if (modelId === 'titan') {
       // Broad heavy cruiser with armor plating
       const bodyGeo = new THREE.BoxGeometry(32, 10, 16);
@@ -686,23 +1494,9 @@ export class PlayerShip {
       this.shipModelGroup.add(this.cockpitMesh);
 
       // Triple heavy thrusters
-      const flameGeo = new THREE.ConeGeometry(4, 20, 20);
-      flameGeo.rotateZ(Math.PI / 2);
-
-      const fCenter = new THREE.Mesh(flameGeo, this.flameMat);
-      fCenter.position.set(-22, 0, 0);
-      this.flameMeshes.push(fCenter);
-      this.shipModelGroup.add(fCenter);
-
-      const fTop = new THREE.Mesh(flameGeo, this.flameMat);
-      fTop.position.set(-20, 4, 6);
-      this.flameMeshes.push(fTop);
-      this.shipModelGroup.add(fTop);
-
-      const fBot = new THREE.Mesh(flameGeo, this.flameMat);
-      fBot.position.set(-20, -4, -6);
-      this.flameMeshes.push(fBot);
-      this.shipModelGroup.add(fBot);
+      this.addThruster(-16, 0, 0, 4.2, 22);
+      this.addThruster(-15, 4, 6, 3.4, 18);
+      this.addThruster(-15, -4, -6, 3.4, 18);
     } else if (modelId === 'phantom') {
       // Disc & Ring warp fuselage
       const bodyGeo = new THREE.TorusGeometry(8, 2.5, 24, 48);
@@ -735,12 +1529,7 @@ export class PlayerShip {
       this.shipModelGroup.add(this.cockpitMesh);
 
       // Ring Thruster
-      const flameGeo = new THREE.CylinderGeometry(2, 6, 16, 24, 1, true);
-      flameGeo.rotateZ(Math.PI / 2);
-      const f1 = new THREE.Mesh(flameGeo, this.flameMat);
-      f1.position.set(-18, 0, 0);
-      this.flameMeshes.push(f1);
-      this.shipModelGroup.add(f1);
+      this.addThruster(-10, 0, 0, 5.5, 18);
     } else if (modelId === 'valkyrie') {
       // Swept-back solar flagship
       const bodyGeo = new THREE.ConeGeometry(9, 34, 28, 3);
@@ -782,12 +1571,7 @@ export class PlayerShip {
       this.shipModelGroup.add(this.cockpitMesh);
 
       // Solar thruster
-      const flameGeo = new THREE.ConeGeometry(5, 22, 24);
-      flameGeo.rotateZ(Math.PI / 2);
-      const f1 = new THREE.Mesh(flameGeo, this.flameMat);
-      f1.position.set(-22, 0, 0);
-      this.flameMeshes.push(f1);
-      this.shipModelGroup.add(f1);
+      this.addThruster(-13, 0, 0, 5, 24);
     } else {
       // 'dart' Default
       const bodyGeo = new THREE.ConeGeometry(8, 30, 28, 3);
@@ -825,17 +1609,13 @@ export class PlayerShip {
       this.cockpitMesh.position.set(4, 2.5, 0);
       this.shipModelGroup.add(this.cockpitMesh);
 
-      const flameGeo = new THREE.ConeGeometry(4, 18, 20);
-      flameGeo.rotateZ(Math.PI / 2);
-      const f1 = new THREE.Mesh(flameGeo, this.flameMat);
-      f1.position.set(-20, 0, 0);
-      this.flameMeshes.push(f1);
-      this.shipModelGroup.add(f1);
+      this.addThruster(-12, 0, 0, 4, 20);
     }
 
-    // Engine Point Light
+    // Engine Point Light. Warm flame-orange rather than the accent colour, so the
+    // light spilling onto the hull agrees with what the plume looks like.
     if (!this.engineLight) {
-      this.engineLight = new THREE.PointLight(this.shipColorHex, 2.8, 100);
+      this.engineLight = new THREE.PointLight(0xff6a1e, 2.8, 100);
       this.shipModelGroup.add(this.engineLight);
     }
     this.engineLight.position.set(-18, 0, 0);
@@ -849,8 +1629,10 @@ export class PlayerShip {
   public setShipColor(colorHex: number): void {
     this.shipColorHex = colorHex;
     if (this.edgeMat) this.edgeMat.color.setHex(colorHex);
-    if (this.flameMat) this.flameMat.color.setHex(colorHex);
-    if (this.engineLight) this.engineLight.color.setHex(colorHex);
+    // Only the flame's throat picks up the accent colour; the body of the plume
+    // stays fire-coloured, and the engine light stays warm.
+    if (this.flameMat) this.flameMat.uniforms.uAccent.value.setHex(colorHex);
+    if (this.flameCoreMat) this.flameCoreMat.uniforms.uAccent.value.setHex(colorHex);
     if (this.showcaseSpotLight) this.showcaseSpotLight.color.setHex(colorHex);
     if (this.bodyMat) {
       this.bodyMat.emissive.setHex(colorHex);
@@ -861,6 +1643,9 @@ export class PlayerShip {
     }
     if (this.shieldShaderMat && this.shieldShaderMat.uniforms.uColor) {
       this.shieldShaderMat.uniforms.uColor.value.setHex(colorHex);
+    }
+    if (this.shieldBubbleMat && this.shieldBubbleMat.uniforms.uColor) {
+      this.shieldBubbleMat.uniforms.uColor.value.setHex(colorHex);
     }
     if (this.hullRimColor) {
       // Mutated in place so the live hull shader uniform follows the paint job
@@ -893,6 +1678,55 @@ export class PlayerShip {
     this.trailParticles = [];
   }
 
+  /**
+   * Local-space bounds of the hull as currently built (model scale included,
+   * shield and modules excluded). Preview stages use this to fit each hull
+   * tightly into its slot instead of guessing a worst-case footprint.
+   */
+  public getModelBounds(): THREE.Box3 {
+    return new THREE.Box3().setFromObject(this.shipModelGroup);
+  }
+
+  /**
+   * Minimal showcase tick for standalone previews (e.g. the boot splash), where
+   * the ship lives in its own tiny scene with no flight, shield, trail or audio.
+   * Drives only the turntable rotation, the thruster plume shader and the
+   * navigation beacons, so the hull looks exactly like it does in the hangar.
+   */
+  public updatePreview(dt: number, spinSpeed = 0.9): void {
+    this.idleTime += dt * 2.1;
+    this.showcaseRotY += dt * spinSpeed;
+
+    this.group.rotation.y = this.showcaseRotY;
+    this.group.rotation.x = Math.sin(this.idleTime * 1.5) * 0.12 + 0.12;
+    this.group.rotation.z = Math.cos(this.idleTime) * 0.05;
+
+    // Previews inspect the bare hull, same as the hangar stage.
+    this.shieldGroup.visible = false;
+
+    this.flameTime += dt * 15;
+
+    const lengthScale = 1.05;
+    for (const f of this.flameMeshes) {
+      f.scale.set(lengthScale, 1, 1);
+      const nozzleX = f.userData.nozzleX as number;
+      const offset = f.userData.offset as number;
+      f.position.x = nozzleX - offset * lengthScale;
+    }
+    for (const mat of [this.flameMat, this.flameCoreMat]) {
+      if (!mat) continue;
+      mat.uniforms.uTime.value = this.flameTime * 0.16;
+      mat.uniforms.uThrust.value = 0.55;
+      mat.uniforms.uWarp.value = 0;
+    }
+    if (this.engineLight) {
+      this.engineLight.intensity = 2.4 + Math.sin(this.flameTime * 2) * 0.8;
+    }
+    if (this.navLightMat) {
+      this.navLightMat.opacity = 0.35 + Math.abs(Math.sin(this.flameTime * 0.8)) * 0.65;
+    }
+  }
+
   public update(
     gameState: GameState,
     keys: Record<string, boolean>,
@@ -922,8 +1756,13 @@ export class PlayerShip {
 
       // Normalized Showcase Scale: Ensures entire ship and shield fit completely
       // inside the stage rectangle, shrinking slightly for shorter stages.
+      //
+      // The hangar gets an extra zoom pass so hulls fill the inspection stage.
+      // It can afford the tighter framing because the shield shell (the widest
+      // thing on the title stage) is hidden there.
       const fit = this.showcaseAnchor ? this.showcaseAnchor.scale : 1;
-      const showcaseScale = Math.min(1.15, this.sizeScale * 0.95) * fit;
+      const zoom = this.isHangar ? HANGAR_SHOWCASE_ZOOM : 1;
+      const showcaseScale = Math.min(1.15, this.sizeScale * 0.95) * fit * zoom;
       this.shipModelGroup.scale.set(showcaseScale, showcaseScale, showcaseScale);
 
       // In Hangar mode, hide the active shield so player inspects pure spaceship hull
@@ -939,22 +1778,38 @@ export class PlayerShip {
       this.group.rotation.z = Math.cos(this.idleTime) * 0.05;
 
       this.flameTime += 0.25;
+      // Hangar/showcase turntable: no flight, so no movement whoosh.
+      soundManager.stopThruster();
     } else {
       // In-flight position & normal scale
       this.shipModelGroup.scale.set(this.sizeScale, this.sizeScale, this.sizeScale);
 
       const targetFlightX = -bounds.halfWidth * 0.72;
-      this.x += (targetFlightX - this.x) * 0.12;
+      if (!this.isWarping) {
+        this.x += (targetFlightX - this.x) * 0.12;
+      }
       this.z += (0 - this.z) * 0.12;
 
       let moveDir = 0;
       if (keys['ArrowUp'] || keys['KeyW']) moveDir += 1;
       if (keys['ArrowDown'] || keys['KeyS']) moveDir -= 1;
 
+      // Movement whoosh level, driven by how hard the ship is manoeuvring.
+      // Set once at the end of this block so every branch reports a value and
+      // the loop never retriggers a one-shot sound.
+      let thrusterTarget = 0;
+
       if (this.isWarping) {
-        // Hyperspace warp stabilization
+        // Hyperspace warp stabilization: centre vertically...
         this.vy = (0 - this.y) * 0.12;
         this.y += this.vy;
+
+        // ...and lunge down the screen. X is driven straight off the surge curve
+        // rather than lerped toward a target, so the acceleration profile is
+        // exactly the curve's and cannot be smeared out by an easing factor.
+        this.warpSurge = this.warpSurgeCurve(this.warpProgress);
+        const warpEdgeX = bounds.halfWidth * 0.74;
+        this.x = targetFlightX + (warpEdgeX - targetFlightX) * this.warpSurge;
       } else if (moveDir !== 0) {
         // Continuous smooth acceleration on holding keys; tap moves ~1/3rd with fluid holding
         const keyAccel = moveDir * (this.speed * 0.21) * (this.smoothness * 1.4);
@@ -962,20 +1817,21 @@ export class PlayerShip {
         const maxFlightVy = this.speed * 0.85;
         this.vy = Math.max(-maxFlightVy, Math.min(maxFlightVy, this.vy));
         this.y += this.vy;
-        if (Math.abs(this.vy) > 0.8) {
-          soundManager.playFlySound();
-        }
+        thrusterTarget = Math.min(1, Math.abs(this.vy) / maxFlightVy);
       } else if (isPointerActive && pointerY !== null) {
         const dy = pointerY - this.y;
         this.vy = dy * this.smoothness;
         this.y += this.vy;
-        if (Math.abs(this.vy) > 1.2) {
-          soundManager.playFlySound();
-        }
+        thrusterTarget = Math.min(1, Math.abs(this.vy) / (this.speed * 0.85));
       } else {
         this.vy *= 0.86;
         this.y += this.vy;
+        // Coasting: let the whoosh trail off with the residual drift.
+        thrusterTarget = Math.min(0.35, Math.abs(this.vy) / (this.speed * 0.85));
       }
+
+      // Below this the ship is effectively still, so go fully silent.
+      soundManager.setThrusterIntensity(thrusterTarget < 0.08 ? 0 : thrusterTarget);
 
       // Constrain within bounds
       const maxY = bounds.halfHeight - this.radius - 8;
@@ -1005,26 +1861,76 @@ export class PlayerShip {
     if (this.hasShield && !this.isHangar) {
       this.shieldGroup.visible = true;
 
-      // Power-up materialization animation
+      // Power-up materialization: the shell snaps outward past its resting size
+      // and settles back, matching Reflect's hard "pop" on cast.
+      const restScale = this.sizeScale * SHIELD_REST_SCALE;
       if (this.isShieldPoweringUp) {
-        this.shieldPowerUpProgress = Math.min(1.0, this.shieldPowerUpProgress + 0.04);
-        const targetScale = this.sizeScale * 1.18 * this.shieldPowerUpProgress;
+        this.shieldPowerUpProgress = Math.min(1.0, this.shieldPowerUpProgress + 0.055);
+        const p = this.shieldPowerUpProgress;
+        // easeOutBack for the overshoot
+        const eased = 1 + 2.2 * Math.pow(p - 1, 3) + 1.4 * Math.pow(p - 1, 2);
+        const targetScale = restScale * (0.35 + 0.65 * eased);
         this.shieldGroup.scale.set(targetScale, targetScale, targetScale);
         if (this.shieldPowerUpProgress >= 1.0) {
           this.isShieldPoweringUp = false;
         }
       } else {
-        const targetScale = this.sizeScale * 1.18;
-        this.shieldGroup.scale.set(targetScale, targetScale, targetScale);
+        this.shieldGroup.scale.set(restScale, restScale, restScale);
       }
 
       // Slowly rotate geodesic crystal shield for prismatic shimmer
       this.shieldGroup.rotation.y += 0.012;
       this.shieldGroup.rotation.x += 0.006;
 
+      // The shell spins for shimmer, so re-express the ship's forward axis in
+      // shield-local space each frame. That keeps the opaque deflector face aimed
+      // at oncoming obstacles while the plates rotate through it.
+      const localForward = new THREE.Vector3(1, 0, 0).applyQuaternion(
+        this.shieldGroup.quaternion.clone().invert()
+      );
+
       // Update shader time for holographic surface shimmer
       if (this.shieldShaderMat && this.shieldShaderMat.uniforms.uTime) {
         this.shieldShaderMat.uniforms.uTime.value += 0.03;
+        this.shieldShaderMat.uniforms.uForm.value = this.shieldPowerUpProgress;
+        this.shieldShaderMat.uniforms.uForward.value.copy(localForward);
+      }
+      if (this.shieldWireMat && this.shieldWireMat.uniforms.uTime) {
+        this.shieldWireMat.uniforms.uTime.value += 0.03;
+        this.shieldWireMat.uniforms.uForward.value.copy(localForward);
+      }
+      if (this.shieldBubbleMat && this.shieldBubbleMat.uniforms.uTime) {
+        this.shieldBubbleMat.uniforms.uTime.value += 0.03;
+      }
+
+      // Sparkle flares: each blinks on its own beat and counter-rotates with the
+      // shell so they drift across the crystal instead of riding one facet.
+      if (this.shieldSparkles.length) {
+        this.shieldTwinkleTime += 0.06;
+        for (let i = 0; i < this.shieldSparkles.length; i++) {
+          const sprite = this.shieldSparkles[i];
+          const beat = Math.sin(this.shieldTwinkleTime * (1.5 + i * 0.23) + i * 1.7);
+          const pop = Math.max(0, beat);
+          const mat = sprite.material as THREE.SpriteMaterial;
+          mat.opacity = (0.12 + Math.pow(pop, 3) * 0.75) * SHIELD_OPACITY_SCALE;
+          const s = 24 * (0.22 + Math.pow(pop, 2) * 0.42);
+          sprite.scale.setScalar(s);
+        }
+        // Counter-spin so sparkles are not locked to the rotating facets.
+        this.shieldSparkleSpin -= 0.02;
+        this.shieldSparkles.forEach((sprite, i) => {
+          const base = sprite.userData.basePos as THREE.Vector3 | undefined;
+          if (!base) {
+            sprite.userData.basePos = sprite.position.clone();
+            return;
+          }
+          const a = this.shieldSparkleSpin + i * 0.9;
+          sprite.position.set(
+            base.x * Math.cos(a) - base.z * Math.sin(a),
+            base.y,
+            base.x * Math.sin(a) + base.z * Math.cos(a)
+          );
+        });
       }
     } else {
       this.shieldGroup.visible = false;
@@ -1053,15 +1959,57 @@ export class PlayerShip {
       this.powerGenLight.intensity = (0.6 + this.powerGenLevel * 0.25) * regenBoost * (0.7 + pulse * 0.5);
     }
 
-    // Pulse Thruster Flames (Supercharged during warp)
-    const baseFlameScale = (1 + Math.sin(this.flameTime) * 0.28 + Math.abs(this.vy) * 0.1) * this.sizeScale;
-    const flameScale = this.isWarping ? baseFlameScale * 2.8 : baseFlameScale;
+    // Thruster flames. The flicker itself now lives in the flame shader, so the
+    // mesh transform only carries throttle: plume length grows with how hard the
+    // ship is manoeuvring, and warp stretches it into a long torch.
+    const throttle = Math.min(1, Math.abs(this.vy) / Math.max(1, this.speed * 0.85));
+    // During warp the plume tracks the lunge itself, so the torch is longest while
+    // the ship is running at the right edge and pulls back in as it decelerates.
+    const lengthScale = this.isWarping ? 1.4 + this.warpSurge * 2.2 : 0.85 + throttle * 0.75;
+    const girthScale = this.isWarping ? 1.0 + this.warpSurge * 0.3 : 0.92 + throttle * 0.2;
 
     for (const f of this.flameMeshes) {
-      f.scale.set(flameScale, 0.9 + Math.cos(this.flameTime * 1.5) * 0.15, 0.9);
+      f.scale.set(lengthScale, girthScale, girthScale);
+      // Stretching a centred cone would pull its mouth off the hull, so the mesh
+      // is re-anchored to its nozzle every frame.
+      const nozzleX = f.userData.nozzleX as number;
+      const offset = f.userData.offset as number;
+      f.position.x = nozzleX - offset * lengthScale;
+    }
+    for (const mat of [this.flameMat, this.flameCoreMat]) {
+      if (!mat) continue;
+      mat.uniforms.uTime.value = this.flameTime * 0.16;
+      mat.uniforms.uThrust.value = this.isWarping ? 1 : 0.3 + throttle * 0.7;
+      mat.uniforms.uWarp.value = this.isWarping ? 1 : 0;
     }
     if (this.engineLight) {
-      this.engineLight.intensity = this.isWarping ? 5.0 : 2.4 + Math.sin(this.flameTime * 2) * 0.8;
+      // A point light this strong reaches the nose as well as the tail, so during
+      // warp it is pulled back behind the hull and its falloff shortened. That
+      // keeps the engine glow a rear-local effect instead of lighting the whole
+      // fuselage from within and washing out the front of the ship.
+      this.engineLight.intensity = this.isWarping ? 3.4 : 2.4 + Math.sin(this.flameTime * 2) * 0.8;
+      this.engineLight.distance = this.isWarping ? 46 : 100;
+      this.engineLight.position.x = this.isWarping ? -28 : -18;
+    }
+
+    // Warp raises global bloom, which also blows out the ship's own forward
+    // emissives (the cockpit glass sits at the nose). Damping them for the
+    // duration keeps the hull silhouette readable through the transition.
+    if (this.cockpitMesh) {
+      const cockpitMat = this.cockpitMesh.material as THREE.MeshStandardMaterial;
+      const base = (this.cockpitMesh.userData.baseEmissive as number | undefined) ?? 0.85;
+      cockpitMat.emissiveIntensity = this.isWarping ? base * 0.35 : base;
+    }
+    if (this.canopyFrameMat) {
+      this.canopyFrameMat.opacity = this.isWarping ? 0.2 : 0.45;
+    }
+    if (this.bodyMat) {
+      this.bodyMat.emissiveIntensity = this.isWarping ? 0.16 : 0.35;
+    }
+    if (this.edgeMat) {
+      // The neon edge lines trace the whole hull, nose included, and are the
+      // largest additive contributor at the front under warp bloom.
+      this.edgeMat.opacity = this.isWarping ? 0.45 : 0.9;
     }
 
     // Blinking navigation beacons

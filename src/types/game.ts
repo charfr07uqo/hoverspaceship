@@ -20,6 +20,19 @@ export interface ShipStats {
   sizeStars: number; // 1-5 stars (smaller size = more stars)
   speedStars: number; // 1-5 stars (faster speed = more stars)
   reactivityStars: number; // 1-5 stars (faster reactivity = more stars)
+  /**
+   * Hits the reflect shell can absorb before it breaks. Baseline is 1; the
+   * Titan Dreadnought ships with 2. Kept as a first-class stat so a future
+   * module can stack extra charges on top of the hull's rating.
+   */
+  shieldCharges: number;
+  /**
+   * True Sight: disguised bombs never cycle back into their gem form. Owned by
+   * the Pulse Oracle today, and designed to also be grantable by a module.
+   */
+  trueVision: boolean;
+  /** Optional one-line description of the hull's special, shown in the hangar. */
+  special?: string;
 }
 
 export interface ShipColorConfig {
@@ -81,6 +94,9 @@ export interface ModuleStatus {
   shieldActive: boolean;
   shieldRegenProgress: number; // 0-1 toward regenerating the shield
   cannonProgress: number; // 0-1 toward the next auto cannon shot
+  shieldCharges: number; // impacts the shell can still absorb (0 = shield down)
+  maxShieldCharges: number; // total charges the current hull/loadout grants
+  trueVisionActive: boolean; // bombs are locked into their revealed form
 }
 
 export interface GameOverSummary {

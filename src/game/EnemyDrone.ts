@@ -165,7 +165,9 @@ export class EnemyDrone3D {
     const dx = this.x - player.x;
     const dy = this.y - player.y;
     const distSq = dx * dx + dy * dy;
-    const combinedRadius = this.radius + player.radius;
+    // While the Reflect shield is up the shell is what the drone rams into, so
+    // test against the shield radius rather than the hull.
+    const combinedRadius = this.radius + player.threatCollisionRadius;
     return distSq < combinedRadius * combinedRadius;
   }
 

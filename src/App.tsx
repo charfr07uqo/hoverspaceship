@@ -47,7 +47,10 @@ export const App: React.FC = () => {
     zoomScannerLevel: 0,
     shieldActive: true,
     shieldRegenProgress: 1,
-    cannonProgress: 0
+    cannonProgress: 0,
+    shieldCharges: 1,
+    maxShieldCharges: 1,
+    trueVisionActive: false
   });
 
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -281,6 +284,7 @@ export const App: React.FC = () => {
           totalGems={totalGems}
           zoomScannerLevel={zoomScannerLevel}
           isHangarMode={gameState === 'START' && menuMode === 'HANGAR'}
+          isWarping={gameState === 'WARPING'}
           onScoreUpdate={setScore}
           onGemsUpdate={handleGemsUpdate}
           onGameOver={handleGameOver}

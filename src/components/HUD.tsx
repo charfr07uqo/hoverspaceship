@@ -212,9 +212,38 @@ export const HUD: React.FC<HUDProps> = ({
         </div>
       )}
 
-      {/* Ship Module Status: shield regen + auto cannon charge bars */}
-      {(moduleStatus.powerGenLevel > 0 || moduleStatus.autoCannonLevel > 0) && (
+      {/* Ship Status: hull specials + module charge bars */}
+      {(moduleStatus.powerGenLevel > 0 ||
+        moduleStatus.autoCannonLevel > 0 ||
+        moduleStatus.maxShieldCharges > 1 ||
+        moduleStatus.trueVisionActive) && (
         <div className="module-hud">
+          {/* Reinforced reflect shell: one pip per charge, lit while available */}
+          {moduleStatus.maxShieldCharges > 1 && (
+            <div
+              className="module-hud-row"
+              title={`Reflect shield — ${moduleStatus.shieldCharges} of ${moduleStatus.maxShieldCharges} charges left`}
+            >
+              <span className="module-hud-icon">🛡️</span>
+              <span className="module-hud-pips">
+                {Array.from({ length: moduleStatus.maxShieldCharges }, (_, idx) => (
+                  <span
+                    key={idx}
+                    className={`shield-charge-pip ${idx < moduleStatus.shieldCharges ? 'lit' : ''}`}
+                  />
+                ))}
+              </span>
+            </div>
+          )}
+
+          {/* True Sight: disguised bombs stay in their revealed form */}
+          {moduleStatus.trueVisionActive && (
+            <div className="module-hud-row" title="True Sight — disguised bombs stay revealed">
+              <span className="module-hud-icon">👁️</span>
+              <span className="module-hud-lvl">TRUE SIGHT</span>
+            </div>
+          )}
+
           {moduleStatus.powerGenLevel > 0 && (
             <div className="module-hud-row" title="Power Generator - shield regeneration">
               <span className="module-hud-icon">{MODULE_META.powerGen.icon}</span>

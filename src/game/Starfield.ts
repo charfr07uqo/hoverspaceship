@@ -24,6 +24,72 @@ function createStarSprite(): THREE.Texture {
   return tex;
 }
 
+/**
+ * Lets a stock PointsMaterial read a per-star size multiplier from an `aScale`
+ * attribute. Patching the built-in shader keeps the sprite map, alpha map and
+ * size attenuation behaviour intact, which a hand-written ShaderMaterial would
+ * have meant reimplementing.
+ */
+function applyPerStarSize(mat: THREE.PointsMaterial): void {
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\n\t\tattribute float aScale;')
+      .replace('gl_PointSize = size;', 'gl_PointSize = size * aScale;');
+  };
+  mat.customProgramCacheKey = () => 'starPerPointScale';
+}
+
+/**
+ * Per-star size and colour spread.
+ *
+ * Sizes use a cubed random so the field stays mostly fine dust with only a
+ * handful of standouts - a flat random reads as uniformly chunky. Colours stay
+ * within a believable stellar range: mostly the layer's base tint, with a
+ * minority of warm amber and a few cool blue-white stars, and brightness varied
+ * per star so the layer has depth instead of one flat wash.
+ */
+function fillStarAppearance(
+  count: number,
+  base: THREE.Color,
+  sizeRange: [number, number],
+  brightnessRange: [number, number],
+  hueMix = 1
+): { colors: Float32Array; scales: Float32Array } {
+  const colors = new Float32Array(count * 3);
+  const scales = new Float32Array(count);
+
+  const warm = new THREE.Color(0xffb27a);
+  const cool = new THREE.Color(0xcfe6ff);
+  const c = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    const r = Math.random();
+    scales[i] = sizeRange[0] + Math.pow(r, 3) * (sizeRange[1] - sizeRange[0]);
+
+    c.copy(base);
+    const hue = Math.random();
+    if (hue > 0.86) {
+      c.lerp(warm, (0.35 + Math.random() * 0.3) * hueMix);
+    } else if (hue > 0.68) {
+      c.lerp(cool, (0.3 + Math.random() * 0.35) * hueMix);
+    }
+
+    // Bigger stars read as nearer, so let them run slightly brighter.
+    const bias = (scales[i] - sizeRange[0]) / (sizeRange[1] - sizeRange[0]);
+    const brightness =
+      brightnessRange[0] +
+      Math.random() * (brightnessRange[1] - brightnessRange[0]) +
+      bias * 0.18;
+    c.multiplyScalar(Math.min(1.25, brightness));
+
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+
+  return { colors, scales };
+}
+
 export class Starfield {
   private scene: THREE.Scene;
   private starSprite: THREE.Texture;
@@ -54,8 +120,16 @@ export class Starfield {
       farPositions[i * 3 + 2] = -100 - Math.random() * 200;
     }
     farGeo.setAttribute('position', new THREE.BufferAttribute(farPositions, 3));
+
+    // The base slate tint now lives in the vertex colours instead of the material,
+    // so individual stars are free to drift warm or cool off it.
+    const far = fillStarAppearance(farCount, new THREE.Color(0x94a3b8), [0.65, 1.75], [0.75, 1.05]);
+    farGeo.setAttribute('color', new THREE.BufferAttribute(far.colors, 3));
+    farGeo.setAttribute('aScale', new THREE.BufferAttribute(far.scales, 1));
+
     this.farMaterial = new THREE.PointsMaterial({
-      color: 0x94a3b8,
+      color: 0xffffff,
+      vertexColors: true,
       size: 5.5,
       map: this.starSprite,
       alphaMap: this.starSprite,
@@ -65,6 +139,7 @@ export class Starfield {
       opacity: 0.6,
       blending: THREE.AdditiveBlending
     });
+    applyPerStarSize(this.farMaterial);
     this.farPoints = new THREE.Points(farGeo, this.farMaterial);
     this.scene.add(this.farPoints);
 
@@ -79,8 +154,17 @@ export class Starfield {
       nearPositions[i * 3 + 2] = (Math.random() - 0.5) * 60;
     }
     nearGeo.setAttribute('position', new THREE.BufferAttribute(nearPositions, 3));
+
+    // Near stars keep the theme colour on the material (setThemeColor still drives
+    // it) and use vertex colours purely as a per-star multiplier, so the hue
+    // variation here is held back to a light tint rather than fighting the theme.
+    const near = fillStarAppearance(nearCount, new THREE.Color(0xffffff), [0.55, 1.6], [0.6, 1.0], 0.45);
+    nearGeo.setAttribute('color', new THREE.BufferAttribute(near.colors, 3));
+    nearGeo.setAttribute('aScale', new THREE.BufferAttribute(near.scales, 1));
+
     this.nearMaterial = new THREE.PointsMaterial({
       color: 0x38bdf8,
+      vertexColors: true,
       size: 9,
       map: this.starSprite,
       alphaMap: this.starSprite,
@@ -90,6 +174,7 @@ export class Starfield {
       opacity: 0.8,
       blending: THREE.AdditiveBlending
     });
+    applyPerStarSize(this.nearMaterial);
     this.nearPoints = new THREE.Points(nearGeo, this.nearMaterial);
     this.scene.add(this.nearPoints);
 

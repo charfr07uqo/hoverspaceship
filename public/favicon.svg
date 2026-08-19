@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>Neon Hover Spaceship</title>
+  <defs>
+    <radialGradient id="hsGlow" cx="0.7" cy="0.3" r="0.7">
+      <stop offset="0" stop-color="#3b0764"/>
+      <stop offset="1" stop-color="#07030f"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#hsGlow)"/>
+  <!-- one dominant lumpy asteroid -->
+  <path d="M40 6 C50 2 60 8 61 18 C62 28 54 34 44 32 C34 30 30 22 32 14 C33 9 36 8 40 6 Z" fill="#4c1d95"/>
+  <path d="M40 6 C50 2 60 8 61 18 C55 20 46 16 40 6 Z" fill="#6d28d9"/>
+  <circle cx="46" cy="24" r="3.6" fill="#3b1372"/>
+  <!-- orbiting debris chips -->
+  <g fill="#7c3aed">
+    <polygon points="24,34 29,33 30,38 25,39"/>
+    <polygon points="56,38 61,40 58,44 54,42"/>
+    <polygon points="14,20 19,21 17,26 13,24"/>
+  </g>
+  <!-- player ship threading past, accent purple canopy and thruster trail -->
+  <path d="M56 48 L26 56 L32 48 L24 42 Z" fill="#ede9fe"/>
+  <path d="M45 49 L33 52 L35 48 Z" fill="#a855f7"/>
+  <path d="M24 48 L10 36 L18 44 L14 32" fill="none" stroke="#c084fc" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

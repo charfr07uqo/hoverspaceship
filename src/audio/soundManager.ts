@@ -2,7 +2,15 @@ import { DifficultyKey } from '../types/game';
 
 class SoundManager {
   private audioCtx: AudioContext | null = null;
-  private lastFlySoundTime = 0;
+
+  // Continuous thruster "whoosh": a single looping noise source that stays
+  // running for the life of the page while only its gain and filter cutoff are
+  // modulated. Retriggering a short tone every frame (the old approach) is what
+  // produced the machine-gun beep while steering.
+  private thrusterNoise: AudioBufferSourceNode | null = null;
+  private thrusterGain: GainNode | null = null;
+  private thrusterFilter: BiquadFilterNode | null = null;
+  private thrusterLevel = 0;
 
   public init(): void {
     if (!this.audioCtx) {
@@ -16,28 +24,136 @@ class SoundManager {
     }
   }
 
-  public playFlySound(): void {
-    const now = Date.now();
-    if (now - this.lastFlySoundTime < 150) return;
-    this.lastFlySoundTime = now;
+  /**
+   * Lazily build the looping thruster noise chain. Two seconds of pink-ish
+   * noise looped through a band-limited low-pass reads as airflow rather than
+   * hiss, and starting it silent means it is inaudible until the ship moves.
+   */
+  private ensureThruster(): boolean {
+    if (!this.audioCtx) return false;
+    if (this.thrusterNoise && this.thrusterGain && this.thrusterFilter) return true;
 
+    try {
+      const ctx = this.audioCtx;
+      const seconds = 2;
+      const bufferSize = Math.floor(ctx.sampleRate * seconds);
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      // Simple one-pole low-pass over white noise gives a soft, rumbly airflow
+      // texture with far less high-end sizzle than raw white noise.
+      let last = 0;
+      for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        last = last * 0.82 + white * 0.18;
+        data[i] = last * 3.2;
+      }
+      // Crossfade the tail into the head so the loop point is seamless.
+      const fade = Math.floor(ctx.sampleRate * 0.05);
+      for (let i = 0; i < fade; i++) {
+        const t = i / fade;
+        data[i] = data[i] * t + data[bufferSize - fade + i] * (1 - t);
+      }
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      noise.loop = true;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.value = 420;
+      filter.Q.value = 0.7;
+
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      noise.start();
+
+      this.thrusterNoise = noise;
+      this.thrusterFilter = filter;
+      this.thrusterGain = gain;
+      return true;
+    } catch (e) {
+      console.warn('Audio play error:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Continuous movement whoosh. Call every frame with how hard the ship is
+   * manoeuvring (0 = coasting, 1 = full deflection); the gain and cutoff glide
+   * toward the target so there are no clicks or retrigger artifacts.
+   */
+  public setThrusterIntensity(intensity: number): void {
+    if (!this.audioCtx) return;
+    if (!this.ensureThruster()) return;
+
+    const target = Math.max(0, Math.min(1, intensity));
+    // Deliberately quiet: this plays constantly, so it should sit under the
+    // gem/hit/explosion effects rather than compete with them.
+    const MAX_GAIN = 0.05;
+
+    // Skip redundant ramp scheduling when nothing meaningful changed.
+    if (Math.abs(target - this.thrusterLevel) < 0.01) return;
+    this.thrusterLevel = target;
+
+    try {
+      const now = this.audioCtx.currentTime;
+      const gain = this.thrusterGain!;
+      const filter = this.thrusterFilter!;
+
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setValueAtTime(gain.gain.value, now);
+      // Slightly slower release than attack so gusts trail off naturally.
+      const ramp = target > gain.gain.value / MAX_GAIN ? 0.08 : 0.22;
+      gain.gain.linearRampToValueAtTime(target * MAX_GAIN, now + ramp);
+
+      // Open the filter up as the ship pushes harder for a sense of speed.
+      filter.frequency.cancelScheduledValues(now);
+      filter.frequency.setValueAtTime(filter.frequency.value, now);
+      filter.frequency.linearRampToValueAtTime(380 + target * 900, now + 0.12);
+    } catch (e) {
+      console.warn('Audio play error:', e);
+    }
+  }
+
+  /** Immediately silence the movement whoosh (death, menus, warp). */
+  public stopThruster(): void {
+    if (!this.thrusterGain || !this.audioCtx) return;
+    try {
+      const now = this.audioCtx.currentTime;
+      this.thrusterLevel = 0;
+      this.thrusterGain.gain.cancelScheduledValues(now);
+      this.thrusterGain.gain.setValueAtTime(this.thrusterGain.gain.value, now);
+      this.thrusterGain.gain.linearRampToValueAtTime(0, now + 0.12);
+    } catch (e) {
+      console.warn('Audio play error:', e);
+    }
+  }
+
+  /** Short zap for the auto-cannon firing. */
+  public playCannonSound(): void {
     if (!this.audioCtx) return;
     try {
+      const now = this.audioCtx.currentTime;
       const osc = this.audioCtx.createOscillator();
       const gain = this.audioCtx.createGain();
 
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(130, this.audioCtx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(300, this.audioCtx.currentTime + 0.12);
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(880, now);
+      osc.frequency.exponentialRampToValueAtTime(220, now + 0.09);
 
-      gain.gain.setValueAtTime(0.06, this.audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, this.audioCtx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.05, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
 
       osc.connect(gain);
       gain.connect(this.audioCtx.destination);
 
-      osc.start();
-      osc.stop(this.audioCtx.currentTime + 0.12);
+      osc.start(now);
+      osc.stop(now + 0.09);
     } catch (e) {
       console.warn('Audio play error:', e);
     }

@@ -5,6 +5,27 @@ import { PlayerShip } from './PlayerShip';
 export type AsteroidShapeType = 'craggy' | 'oblong' | 'crystal' | 'smooth' | 'boulder';
 
 /**
+ * Global size multiplier for every rock in every formation. Applied to the
+ * radius at generation time (not as a mesh scale) so that the stacking and
+ * gap-edge placement math in buildFormation stays consistent with the visual
+ * size and rocks keep sitting flush against the corridor edges.
+ */
+const ASTEROID_SIZE_SCALE = 0.8;
+
+/** Scale a raw formation radius by the global asteroid size multiplier. */
+function rockRadius(raw: number): number {
+  return raw * ASTEROID_SIZE_SCALE;
+}
+
+/**
+ * Arcade leniency applied to the player's *hull* radius when the Reflect shield
+ * is down, so near-misses against the exposed ship read as misses. The shield
+ * shell gets no such discount: it is a hard energy barrier and collides at its
+ * full rendered radius.
+ */
+const HULL_HIT_LENIENCY = 0.65;
+
+/**
  * Cheap deterministic 3D value noise. Used to displace asteroid hulls with
  * coherent lumps instead of per-vertex white noise, which is what made the old
  * rocks read as "spiky ball" rather than "rock".
@@ -61,48 +82,106 @@ function fbm3(x: number, y: number, z: number): number {
 }
 
 /**
- * Injects a rim-light + crevice-shadow term into a MeshStandardMaterial without
- * writing a whole material from scratch. The vertex colour red channel carries a
- * baked cavity mask (see generateGeometry), and the fresnel rim picks up the
- * sector theme colour so rocks silhouette against the dark background.
+ * Injects a fresnel rim-light term into a MeshStandardMaterial without writing a
+ * whole material from scratch. The rim picks up the sector theme colour so rocks
+ * silhouette against the dark background; crevice shading is baked separately
+ * into vertex colours (see generateGeometry).
+ *
+ * Deliberately adds no varyings and does not touch the vertex shader. The
+ * standard material already publishes everything needed: `vViewPosition` is
+ * declared unconditionally by the STANDARD fragment shader, and `normal` is in
+ * scope for the rest of main() after `<normal_fragment_begin>` (which derives it
+ * from screen-space derivatives when FLAT_SHADED, so crystals work too). The
+ * previous version declared its own vRimNormal/vRimView pair and wrote them from
+ * an injected `<project_vertex>` hook, which is exactly the kind of hand-rolled
+ * variant that some mobile GL drivers refuse to link.
  */
-function applyRockShader(mat: THREE.MeshStandardMaterial, rimColor: THREE.Color): void {
+function applyRockShader(mat: THREE.MeshStandardMaterial, rimColor: THREE.Color, cacheKey: string): void {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uRimColor = { value: rimColor };
-    // Own varyings: flat-shaded materials do not expose vNormal.
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-         varying vec3 vRimNormal;
-         varying vec3 vRimView;`
-      )
-      .replace(
-        '#include <project_vertex>',
-        `#include <project_vertex>
-         vRimNormal = normalize(normalMatrix * normal);
-         vRimView = -mvPosition.xyz;`
-      );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
-         uniform vec3 uRimColor;
-         varying vec3 vRimNormal;
-         varying vec3 vRimView;`
+         uniform vec3 uRimColor;`
       )
       .replace(
         '#include <dithering_fragment>',
         `#include <dithering_fragment>
          // Fresnel rim: bright at grazing angles, invisible face-on.
-         float rimNdv = 1.0 - clamp(dot(normalize(vRimNormal), normalize(vRimView)), 0.0, 1.0);
-         float rim = pow(rimNdv, 3.0);
-         gl_FragColor.rgb += uRimColor * rim * 0.8;`
+         float rimNdv = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
+         gl_FragColor.rgb += uRimColor * pow(rimNdv, 3.0) * 0.8;`
       );
   };
-  // Ensure the shader variant is not shared with untouched standard materials
-  mat.customProgramCacheKey = () => 'rockRim';
+  // Keeps this variant from sharing a program with untouched standard materials.
+  mat.customProgramCacheKey = () => cacheKey;
 }
+
+/**
+ * The two rock surface finishes. Everything that used to vary per rock (base
+ * colour, cavity shading) is baked into vertex colours instead, so every
+ * asteroid in the field draws with one of two shared materials.
+ */
+type RockFinish = 'crystal' | 'rock';
+
+interface SharedRockMaterial {
+  material: THREE.MeshStandardMaterial;
+  /** Mutated in place so the live shader uniform tracks the sector theme. */
+  rimColor: THREE.Color;
+  wireMaterial: THREE.LineBasicMaterial;
+}
+
+/**
+ * One material pair per finish, shared by every rock in the field.
+ *
+ * This used to be a fresh MeshStandardMaterial (plus a fresh LineBasicMaterial)
+ * per asteroid — hundreds of them over a run, each carrying its own
+ * onBeforeCompile hook and its own uniform block. Sharing collapses that to two,
+ * which is both far less per-frame GL state and far less for a driver to get
+ * wrong: rocks rendering as flat untextured blobs on some Android devices is the
+ * signature of a material whose program never linked.
+ */
+const sharedRockMaterials = new Map<RockFinish, SharedRockMaterial>();
+
+function getSharedRockMaterial(finish: RockFinish, themeColorHex: number): SharedRockMaterial {
+  const existing = sharedRockMaterials.get(finish);
+  if (existing) return existing;
+
+  const isCrystal = finish === 'crystal';
+  const rimColor = new THREE.Color(themeColorHex).multiplyScalar(0.5);
+
+  const material = new THREE.MeshStandardMaterial({
+    // White base: the rock's own hue arrives through vertex colours, which the
+    // standard shader multiplies into the diffuse term.
+    color: 0xffffff,
+    roughness: isCrystal ? 0.35 : 0.92,
+    metalness: isCrystal ? 0.65 : 0.12,
+    flatShading: isCrystal,
+    vertexColors: true,
+    // Emissive cannot ride on vertex colours, so it is a neutral cool tone for
+    // the whole field rather than a per-rock hue. At these intensities the
+    // difference is not readable.
+    emissive: new THREE.Color(0x2f3a4a),
+    emissiveIntensity: isCrystal ? 0.22 : 0.06
+  });
+  applyRockShader(material, rimColor, `rockRim_${finish}`);
+
+  // Neon accent lines share the same fate: one material for the whole field.
+  const wireMaterial = new THREE.LineBasicMaterial({
+    color: themeColorHex,
+    transparent: true,
+    opacity: isCrystal ? 0.6 : 0.3,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+
+  const entry: SharedRockMaterial = { material, rimColor, wireMaterial };
+  sharedRockMaterials.set(finish, entry);
+  return entry;
+}
+
+/** Palette the per-rock base colour is drawn from and baked into vertex colours. */
+const ROCK_COLORS = [0x334155, 0x3f2a4d, 0x1e3a5f, 0x4a3520, 0x2f4738];
 
 export class ProceduralAsteroid3D {
   public offsetX: number;
@@ -110,7 +189,6 @@ export class ProceduralAsteroid3D {
   public baseRadius: number;
   public collisionRadius: number;
   public shapeType: AsteroidShapeType;
-  private themeColorHex: number;
 
   private rotSpeedX: number;
   private rotSpeedY: number;
@@ -118,10 +196,9 @@ export class ProceduralAsteroid3D {
 
   public mesh: THREE.Mesh;
   private geometry: THREE.BufferGeometry;
-  private material: THREE.MeshStandardMaterial;
   private wireMesh: THREE.LineSegments;
-  private wireMat: THREE.LineBasicMaterial;
-  private rimColor: THREE.Color;
+  /** Shared, field-wide materials. Never disposed by an individual rock. */
+  private shared: SharedRockMaterial;
 
   constructor(
     offsetX: number,
@@ -133,7 +210,6 @@ export class ProceduralAsteroid3D {
     this.offsetX = offsetX;
     this.offsetY = offsetY;
     this.baseRadius = baseRadius;
-    this.themeColorHex = themeColorHex;
     this.shapeType = shapeType;
 
     // Fair arcade collision radius (72% of bounding sphere)
@@ -143,27 +219,19 @@ export class ProceduralAsteroid3D {
     this.rotSpeedY = (Math.random() - 0.5) * 0.03;
     this.rotSpeedZ = (Math.random() - 0.5) * 0.025;
 
+    // Per-rock base colour, baked into vertex colours so the shared material can
+    // stay white and still give every rock its own hue.
+    const chosenColor = new THREE.Color(ROCK_COLORS[Math.floor(Math.random() * ROCK_COLORS.length)]);
+
     // Generate varied procedural geometries
-    this.geometry = this.generateGeometry(baseRadius, shapeType);
+    this.geometry = this.generateGeometry(baseRadius, shapeType, chosenColor);
 
-    // Varied shading and rock colors
-    const rockColors = [0x334155, 0x3f2a4d, 0x1e3a5f, 0x4a3520, 0x2f4738];
-    const chosenColor = rockColors[Math.floor(Math.random() * rockColors.length)];
+    this.shared = getSharedRockMaterial(shapeType === 'crystal' ? 'crystal' : 'rock', themeColorHex);
+    // The shared entry may have been created under a previous sector's theme, so
+    // a freshly spawned rock always reasserts the current one.
+    this.setThemeColor(themeColorHex);
 
-    this.material = new THREE.MeshStandardMaterial({
-      color: chosenColor,
-      roughness: shapeType === 'crystal' ? 0.35 : 0.92,
-      metalness: shapeType === 'crystal' ? 0.65 : 0.12,
-      flatShading: shapeType === 'crystal',
-      // Baked cavity/mineral-streak shading comes in through vertex colours
-      vertexColors: true,
-      emissive: new THREE.Color(chosenColor),
-      emissiveIntensity: shapeType === 'crystal' ? 0.22 : 0.06
-    });
-    this.rimColor = new THREE.Color(themeColorHex).multiplyScalar(0.5);
-    applyRockShader(this.material, this.rimColor);
-
-    this.mesh = new THREE.Mesh(this.geometry, this.material);
+    this.mesh = new THREE.Mesh(this.geometry, this.shared.material);
     // Crucial: set local mesh position inside group
     this.mesh.position.set(this.offsetX, this.offsetY, 0);
 
@@ -172,18 +240,15 @@ export class ProceduralAsteroid3D {
     // as noise, so only sharp ridge edges are traced (crystals keep tighter
     // facets, so they use a lower threshold and stay more graphic).
     const wireGeo = new THREE.EdgesGeometry(this.geometry, shapeType === 'crystal' ? 22 : 42);
-    this.wireMat = new THREE.LineBasicMaterial({
-      color: this.themeColorHex,
-      transparent: true,
-      opacity: shapeType === 'crystal' ? 0.6 : 0.3,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false
-    });
-    this.wireMesh = new THREE.LineSegments(wireGeo, this.wireMat);
+    this.wireMesh = new THREE.LineSegments(wireGeo, this.shared.wireMaterial);
     this.mesh.add(this.wireMesh);
   }
 
-  private generateGeometry(baseRadius: number, shapeType: AsteroidShapeType): THREE.BufferGeometry {
+  private generateGeometry(
+    baseRadius: number,
+    shapeType: AsteroidShapeType,
+    baseColor: THREE.Color
+  ): THREE.BufferGeometry {
     let geo: THREE.BufferGeometry;
 
     // Per-rock noise seed so identical shape types still look different
@@ -223,13 +288,15 @@ export class ProceduralAsteroid3D {
         if (transform) transform(v);
         pos.setXYZ(i, v.x, v.y, v.z);
 
-        // Cavity mask from the same noise: -1 = deep crevice, +1 = ridge
+        // Cavity mask from the same noise: -1 = deep crevice, +1 = ridge.
+        // Multiplied by the rock's base colour, which the shared white material
+        // then passes straight through to the diffuse term.
         const cavity = THREE.MathUtils.clamp(lump * 0.5 + 0.5, 0, 1);
         const shade = 0.62 + cavity * 0.55;
         const warm = 0.62 + cavity * 0.62;
-        colors[i * 3] = warm;
-        colors[i * 3 + 1] = shade;
-        colors[i * 3 + 2] = shade * 0.98;
+        colors[i * 3] = warm * baseColor.r;
+        colors[i * 3 + 1] = shade * baseColor.g;
+        colors[i * 3 + 2] = shade * 0.98 * baseColor.b;
       }
 
       pos.needsUpdate = true;
@@ -266,15 +333,15 @@ export class ProceduralAsteroid3D {
     return geo;
   }
 
+  /**
+   * The theme is a property of the sector, not of an individual rock, so this
+   * retints the shared materials. Calling it per asteroid is redundant but
+   * harmless, and keeps the existing call sites working.
+   */
   public setThemeColor(colorHex: number): void {
-    this.themeColorHex = colorHex;
-    if (this.wireMat) {
-      this.wireMat.color.setHex(colorHex);
-    }
-    if (this.rimColor) {
-      // Mutating in place keeps the live shader uniform in sync
-      this.rimColor.setHex(colorHex).multiplyScalar(0.5);
-    }
+    this.shared.wireMaterial.color.setHex(colorHex);
+    // Mutating in place keeps the live shader uniform in sync
+    this.shared.rimColor.setHex(colorHex).multiplyScalar(0.5);
   }
 
   public update(): void {
@@ -283,13 +350,18 @@ export class ProceduralAsteroid3D {
     this.mesh.rotation.z += this.rotSpeedZ;
   }
 
-  public collidesWith(clusterX: number, clusterY: number, px: number, py: number, pradius: number): boolean {
+  /**
+   * @param effectiveRadius Final collision radius of whatever is hitting this
+   *   rock (the player's shield shell or its leniency-adjusted hull). Any
+   *   fairness discount is applied by the caller, not here.
+   */
+  public collidesWith(clusterX: number, clusterY: number, px: number, py: number, effectiveRadius: number): boolean {
     const worldX = clusterX + this.offsetX;
     const worldY = clusterY + this.offsetY;
     const dx = px - worldX;
     const dy = py - worldY;
     const distSq = dx * dx + dy * dy;
-    const hitDist = this.collisionRadius + pradius * 0.65;
+    const hitDist = this.collisionRadius + effectiveRadius;
     return distSq < hitDist * hitDist;
   }
 
@@ -300,11 +372,10 @@ export class ProceduralAsteroid3D {
     };
   }
 
+  /** Only the geometry is owned by this rock; the materials are field-wide. */
   public dispose(): void {
     this.geometry.dispose();
-    this.material.dispose();
     this.wireMesh.geometry.dispose();
-    this.wireMat.dispose();
   }
 }
 
@@ -411,13 +482,13 @@ export class ObstaclePair3D {
 
     if (this.formationType === 'middle_island') {
       // Middle floating island with upper and lower gap corridors
-      const islandR = Math.random() * 10 + 22;
+      const islandR = rockRadius(Math.random() * 10 + 22);
       const island = new ProceduralAsteroid3D(0, this.gapY, islandR, themeColorHex, 'crystal');
       this.asteroids.push(island);
       this.group.add(island.mesh);
 
       // Top ceiling rock
-      const topR = Math.random() * 14 + 30;
+      const topR = rockRadius(Math.random() * 14 + 30);
       const top = new ProceduralAsteroid3D(
         (Math.random() - 0.5) * 20,
         topEdgeY + topR + 25,
@@ -429,7 +500,7 @@ export class ObstaclePair3D {
       this.group.add(top.mesh);
 
       // Bottom floor rock
-      const botR = Math.random() * 14 + 30;
+      const botR = rockRadius(Math.random() * 14 + 30);
       const bot = new ProceduralAsteroid3D(
         (Math.random() - 0.5) * 20,
         botEdgeY - botR - 25,
@@ -448,7 +519,7 @@ export class ObstaclePair3D {
       const numTop = this.scaleCount(Math.floor(Math.random() * 3) + 2);
       let currentTopY = topEdgeY;
       for (let i = 0; i < numTop; i++) {
-        const r = Math.random() * 14 + 24;
+        const r = rockRadius(Math.random() * 14 + 24);
         const ox = topShiftX + (Math.random() - 0.5) * 25;
         const oy = currentTopY + r;
         const ast = new ProceduralAsteroid3D(ox, oy, r, themeColorHex, this.getRandomShape());
@@ -461,7 +532,7 @@ export class ObstaclePair3D {
       const numBot = this.scaleCount(Math.floor(Math.random() * 3) + 2);
       let currentBotY = botEdgeY;
       for (let i = 0; i < numBot; i++) {
-        const r = Math.random() * 14 + 24;
+        const r = rockRadius(Math.random() * 14 + 24);
         const ox = botShiftX + (Math.random() - 0.5) * 25;
         const oy = currentBotY - r;
         const ast = new ProceduralAsteroid3D(ox, oy, r, themeColorHex, this.getRandomShape());
@@ -473,7 +544,7 @@ export class ObstaclePair3D {
       // Scattered asteroid belt cluster with weaving path
       const count = this.scaleCount(Math.floor(Math.random() * 2) + 3);
       for (let i = 0; i < count; i++) {
-        const r = Math.random() * 12 + 20;
+        const r = rockRadius(Math.random() * 12 + 20);
         const ox = (Math.random() - 0.5) * 70;
         // Keep rocks outside gap center
         const isTop = i % 2 === 0;
@@ -490,7 +561,7 @@ export class ObstaclePair3D {
       const numTop = this.scaleCount(Math.floor(Math.random() * 3) + 2);
       let currentTopY = topEdgeY;
       for (let i = 0; i < numTop; i++) {
-        const r = Math.random() * 14 + 25;
+        const r = rockRadius(Math.random() * 14 + 25);
         const ox = (Math.random() - 0.5) * 25;
         const oy = currentTopY + r;
         const ast = new ProceduralAsteroid3D(ox, oy, r, themeColorHex, this.getRandomShape());
@@ -503,7 +574,7 @@ export class ObstaclePair3D {
       const numBot = this.scaleCount(Math.floor(Math.random() * 3) + 2);
       let currentBotY = botEdgeY;
       for (let i = 0; i < numBot; i++) {
-        const r = Math.random() * 14 + 25;
+        const r = rockRadius(Math.random() * 14 + 25);
         const ox = (Math.random() - 0.5) * 25;
         const oy = currentBotY - r;
         const ast = new ProceduralAsteroid3D(ox, oy, r, themeColorHex, this.getRandomShape());
@@ -547,8 +618,17 @@ export class ObstaclePair3D {
 
   public collidesWith(p: PlayerShip): boolean {
     const clusterY = this.group.position.y;
+    // With the Reflect shield up, the shell is the surface the rock strikes, so
+    // it collides at its full rendered radius. Bare hull keeps the arcade
+    // leniency that makes tight gaps feel fair.
+    const shieldRadius = p.shieldCollisionRadius;
+    const effectiveRadius =
+      shieldRadius === null
+        ? p.radius * HULL_HIT_LENIENCY
+        : Math.max(p.radius * HULL_HIT_LENIENCY, shieldRadius);
+
     for (const a of this.asteroids) {
-      if (a.collidesWith(this.x, clusterY, p.x, p.y, p.radius)) return true;
+      if (a.collidesWith(this.x, clusterY, p.x, p.y, effectiveRadius)) return true;
     }
     return false;
   }

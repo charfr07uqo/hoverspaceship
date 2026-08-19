@@ -35,6 +35,15 @@ interface RawShipStats {
   sizeStars: number;
   speedStars: number;
   reactivityStars: number;
+  // Specials are opt-in per ship; anything omitted falls back to shipDefaults.
+  shieldCharges?: number;
+  trueVision?: boolean;
+  special?: string;
+}
+
+interface RawShipDefaults {
+  shieldCharges: number;
+  trueVision: boolean;
 }
 
 interface RawDifficulty {
@@ -115,6 +124,7 @@ interface GameConfigFile {
     framesPerSec: number;
     minSpawnInterval: number;
   };
+  shipDefaults: RawShipDefaults;
   ships: Record<ShipModelId, RawShipStats>;
   difficulties: Record<DifficultyKey, RawDifficulty>;
   shipColors: Record<ShipColorKey, RawShipColor>;
@@ -344,11 +354,27 @@ export const MODULE_META: Record<'powerGen' | 'autoCannon' | 'zoomScanner', Modu
 // ---------------------------------------------------------------------------
 // Ship models
 // ---------------------------------------------------------------------------
+
+/** Baseline special ratings inherited by any ship that does not override them. */
+export const SHIP_DEFAULTS = CONFIG.shipDefaults;
+
+/** Shield charges every hull starts from before per-ship or module bonuses. */
+export const BASE_SHIELD_CHARGES = SHIP_DEFAULTS.shieldCharges;
+
 export const SHIPS_CONFIG: Record<ShipModelId, ShipStats> = Object.fromEntries(
-  (Object.keys(CONFIG.ships) as ShipModelId[]).map((id) => [
-    id,
-    { id, ...CONFIG.ships[id] }
-  ])
+  (Object.keys(CONFIG.ships) as ShipModelId[]).map((id) => {
+    const raw = CONFIG.ships[id];
+    return [
+      id,
+      {
+        id,
+        ...raw,
+        // Normalise the opt-in specials so consumers never deal with undefined.
+        shieldCharges: raw.shieldCharges ?? SHIP_DEFAULTS.shieldCharges,
+        trueVision: raw.trueVision ?? SHIP_DEFAULTS.trueVision
+      }
+    ];
+  })
 ) as Record<ShipModelId, ShipStats>;
 
 // ---------------------------------------------------------------------------

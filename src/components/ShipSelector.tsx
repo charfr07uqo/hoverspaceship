@@ -13,12 +13,26 @@ interface ShipSelectorProps {
 
 const SHIP_IDS: ShipModelId[] = ['dart', 'viper', 'titan', 'phantom', 'valkyrie'];
 
+/** Highest shield charge rating the pip readout can display. */
+const MAX_SHIELD_PIPS = 5;
+
 const renderStars = (stars: number) => {
   const filled = Math.max(1, Math.min(5, stars));
   return (
     <span className="star-rating">
       {'★'.repeat(filled)}
       <span className="star-empty">{'☆'.repeat(5 - filled)}</span>
+    </span>
+  );
+};
+
+/** Shield charges as filled/empty diamonds, leaving headroom for future upgrades. */
+const renderShieldPips = (charges: number) => {
+  const filled = Math.max(1, Math.min(MAX_SHIELD_PIPS, charges));
+  return (
+    <span className="star-rating shield-pips">
+      {'◆'.repeat(filled)}
+      <span className="star-empty">{'◇'.repeat(MAX_SHIELD_PIPS - filled)}</span>
     </span>
   );
 };
@@ -63,27 +77,7 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
 
   return (
     <div className="ship-selector-card">
-      {/* Ship Quick Tabs */}
-      <div className="ship-tabs-row">
-        {SHIP_IDS.map((id) => {
-          const cfg = SHIPS_CONFIG[id];
-          const unlocked = unlockedShips.includes(id);
-          const active = currentShipModel === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              className={`ship-tab-chip ${active ? 'active' : ''} ${unlocked ? 'unlocked' : 'locked'}`}
-              onClick={() => handleSelectShip(id)}
-              title={cfg.name}
-            >
-              <span className="ship-tab-icon">{unlocked ? '🚀' : '🔒'}</span>
-              <span className="ship-tab-label">{cfg.name.split(' ')[1] || cfg.name}</span>
-            </button>
-          );
-        })}
-      </div>
-
+      {/* Ships are browsed purely with the left/right arrows below. */}
       <div className="ship-selector-header">
         <button type="button" className="nav-arrow-btn" onClick={handlePrev} title="Previous Ship">
           ◀
@@ -92,6 +86,10 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         <div className="ship-name-badge">
           <span className="ship-name">{currentConfig.name}</span>
           <span className="ship-tagline">{currentConfig.tagline}</span>
+          {/* Read-only position marker now that the per-ship tabs are gone */}
+          <span className="ship-index-counter">
+            HULL {SHIP_IDS.indexOf(currentShipModel) + 1} / {SHIP_IDS.length}
+          </span>
         </div>
 
         <button type="button" className="nav-arrow-btn" onClick={handleNext} title="Next Ship">
@@ -116,7 +114,22 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
           <span className="stat-pill-value">{currentConfig.reactivityLabel}</span>
           {renderStars(currentConfig.reactivityStars)}
         </div>
+        <div className="stat-pill" title="Impacts the reflect shield can absorb before it breaks">
+          <span className="stat-pill-label">SHIELD</span>
+          <span className="stat-pill-value">
+            {currentConfig.shieldCharges} HIT{currentConfig.shieldCharges === 1 ? '' : 'S'}
+          </span>
+          {renderShieldPips(currentConfig.shieldCharges)}
+        </div>
       </div>
+
+      {/* Hull special (shield charges, True Sight, ...) */}
+      {currentConfig.special && (
+        <div className="ship-special-row">
+          <span className="ship-special-tag">SPECIAL</span>
+          <span className="ship-special-text">{currentConfig.special}</span>
+        </div>
+      )}
 
       {/* Unlock / Select Status */}
       <div className="ship-action-container">

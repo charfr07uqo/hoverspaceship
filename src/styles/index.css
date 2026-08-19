@@ -116,13 +116,45 @@ html, body {
   height: 100%;
   z-index: 2;
   pointer-events: none;
+  /* Ease in from a true 0% alpha: the first stops ramp very slowly so the left
+     edge is imperceptible instead of showing a visible seam. */
   background: linear-gradient(
     to right,
     rgba(1, 2, 8, 0) 0%,
-    rgba(1, 2, 8, 0.5) 35%,
-    rgba(1, 2, 8, 0.85) 65%,
+    rgba(1, 2, 8, 0.02) 12%,
+    rgba(1, 2, 8, 0.08) 25%,
+    rgba(1, 2, 8, 0.22) 40%,
+    rgba(1, 2, 8, 0.45) 55%,
+    rgba(1, 2, 8, 0.7) 70%,
+    rgba(0, 0, 0, 0.9) 85%,
     rgba(0, 0, 0, 1) 100%
   );
   backdrop-filter: blur(2px);
-  transition: width 0.4s ease;
+  /* The blur is a uniform effect, so without a mask it snaps on at the left
+     edge even where the gradient is fully transparent. Masking the whole layer
+     ramps the blur in together with the darkening. */
+  mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.15) 25%,
+    rgba(0, 0, 0, 0.55) 55%,
+    rgba(0, 0, 0, 1) 85%,
+    rgba(0, 0, 0, 1) 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.15) 25%,
+    rgba(0, 0, 0, 0.55) 55%,
+    rgba(0, 0, 0, 1) 85%,
+    rgba(0, 0, 0, 1) 100%
+  );
+  opacity: 1;
+  transition: width 0.4s ease, opacity 0.35s ease;
+}
+
+/* Fully clear the fog during the spacewarp cutscene so the warp streaks and
+   hologram banner read cleanly across the whole viewport. */
+.fog-of-war.is-hidden {
+  opacity: 0;
 }
