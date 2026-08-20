@@ -22,14 +22,14 @@ level:
   # sector adds `step` seconds until the running duration reaches `upTo`,
   # then the next stage takes over. The running value is clamped to each
   # stage's `upTo` so durations land on clean numbers.
-  #   15 -> +2 up to 25 -> +3 up to 30 -> +5 up to 60 (max)
+  #   15 -> +1 up to 25 -> +2 up to 30 -> +4 up to 60 (max)
   durationStages:
     - upTo: 25
-      step: 2
+      step: 1
     - upTo: 30
-      step: 3
+      step: 2
     - upTo: 60
-      step: 5
+      step: 4
 
 # ---------------------------------------------------------------------------
 # Enemy interceptor spawning per sector level
@@ -299,6 +299,8 @@ difficulties:
     themeGlow: rgba(34, 197, 94, 0.4)
     # Training wheels: one free extra reflect charge on every hull.
     shieldChargeBonus: 1
+    # Free tier-1 Auto Cannon fitted from the start of every run.
+    startAutoCannonLevel: 1
     blurb: Slowest scroll, widest gaps and the thinnest rock fields. Nothing sways and drifting rocks are at their slowest.
   normal:
     label: NORMAL
@@ -310,6 +312,8 @@ difficulties:
     spawnInterval: 140
     themeColor: "#38bdf8"
     themeGlow: rgba(56, 189, 248, 0.4)
+    # Free tier-1 Auto Cannon fitted from the start of every run.
+    startAutoCannonLevel: 1
     blurb: The baseline run. Steady scroll, standard gaps, and 1 in 5 formations sways.
   hard:
     label: HARD

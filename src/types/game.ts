@@ -70,6 +70,11 @@ export interface DifficultyConfig {
    * shieldChargeMultiplier. 0 for every difficulty except EASY.
    */
   shieldChargeBonus: number;
+  /**
+   * Auto Cannon tier fitted for free at the start of every run on this
+   * difficulty. 0 for difficulties that grant no default cannon.
+   */
+  startAutoCannonLevel: number;
 }
 
 export interface LevelSimulation {

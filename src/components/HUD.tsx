@@ -267,7 +267,9 @@ export const HUD: React.FC<HUDProps> = ({
               <span className="module-hud-lvl">L{moduleStatus.powerGenLevel}</span>
               <div className="module-hud-track">
                 <div
-                  className={`module-hud-fill shield ${moduleStatus.shieldActive ? 'ready' : ''}`}
+                  className={`module-hud-fill shield ${
+                    moduleStatus.shieldCharges >= moduleStatus.maxShieldCharges ? 'ready' : ''
+                  }`}
                   style={{ width: `${Math.round(moduleStatus.shieldRegenProgress * 100)}%` }}
                 />
               </div>

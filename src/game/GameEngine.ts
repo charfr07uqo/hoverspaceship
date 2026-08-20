@@ -21,6 +21,7 @@ import {
   SHIELD_REGEN_DELAYS_SEC,
   getShieldChargeBonus,
   getDifficultyShieldChargeBonus,
+  getDifficultyStartAutoCannonLevel,
   SHIP_COLORS,
   SHIPS_CONFIG
 } from '../constants/gameConfig';
@@ -675,8 +676,11 @@ export class GameEngine {
   private emitModuleStatus(): void {
     if (!this.callbacks.onModuleStatus || !this.player) return;
 
-    let shieldRegenProgress = this.player.hasShield ? 1 : 0;
-    if (this.powerGenLevel > 0 && !this.player.hasShield) {
+    // Full bar when the shell is at capacity; otherwise show the countdown to
+    // the next regenerated charge so the timer reads as live progress.
+    const shieldAtCapacity = this.player.shieldCharges >= this.player.maxShieldCharges;
+    let shieldRegenProgress = shieldAtCapacity ? 1 : 0;
+    if (this.powerGenLevel > 0 && !shieldAtCapacity) {
       const delay = SHIELD_REGEN_DELAYS_SEC[this.powerGenLevel - 1];
       shieldRegenProgress = Math.min(1, this.shieldRegenTimer / delay);
     }
@@ -753,13 +757,15 @@ export class GameEngine {
     this.warpTimer = 0;
     this.deathTimer = 0;
 
-    // Modules are per-run only: reset every new game.
+    // Modules are per-run only: reset every new game. EASY/NORMAL fit a free
+    // tier-1 Auto Cannon from the start; everything else starts unfitted.
     this.powerGenLevel = 0;
-    this.autoCannonLevel = 0;
+    this.autoCannonLevel = getDifficultyStartAutoCannonLevel(this.currentDifficulty);
     this.zoomScannerLevel = 0;
     this.shieldCellLevel = 0;
     this.shieldRegenTimer = 0;
-    this.autoCannonTimer = 0;
+    this.autoCannonTimer =
+      this.autoCannonLevel > 0 ? AUTO_CANNON_RELOAD_SEC[this.autoCannonLevel - 1] : 0;
     this.trueVisionModuleLevel = 0;
     this.applyModuleVisuals();
     // Drop module-granted shield charges, keeping only the difficulty handout.
@@ -1289,21 +1295,27 @@ export class GameEngine {
       }
 
       // --- Power Generator Module: regenerate the reflect shield after a delay ---
-      if (this.powerGenLevel > 0 && !this.player.hasShield) {
+      // Regenerates one charge per cycle whenever the shell is below capacity,
+      // so it both revives a fully broken shield AND tops worn-down multi-charge
+      // shields back up one pip at a time.
+      if (this.powerGenLevel > 0 && this.player.shieldCharges < this.player.maxShieldCharges) {
         this.shieldRegenTimer += dt;
         const delay = SHIELD_REGEN_DELAYS_SEC[this.powerGenLevel - 1];
         if (this.shieldRegenTimer >= delay) {
-          this.player.triggerShieldPowerUp();
-          this.shieldRegenTimer = 0;
-          soundManager.playGemSound();
-          const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
-          this.particleSystem.createShockwave(this.player.x, this.player.y, 0, shipConfig.colorHex);
-          if (this.callbacks.onFloatText) {
-            this.callbacks.onFloatText('🛡️ SHIELD RESTORED!', this.player.x + 30, this.player.y + 20, '#38bdf8');
+          const wasBroken = !this.player.hasShield;
+          if (this.player.regenerateShieldCharge()) {
+            this.shieldRegenTimer = 0;
+            soundManager.playGemSound();
+            const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
+            this.particleSystem.createShockwave(this.player.x, this.player.y, 0, shipConfig.colorHex);
+            if (this.callbacks.onFloatText) {
+              const label = wasBroken ? '🛡️ SHIELD RESTORED!' : '🛡️ CHARGE +1';
+              this.callbacks.onFloatText(label, this.player.x + 30, this.player.y + 20, '#38bdf8');
+            }
           }
         }
       } else {
-        // Reset so the countdown starts fresh the moment the shield next breaks.
+        // Reset so the countdown starts fresh the moment a charge is next spent.
         this.shieldRegenTimer = 0;
       }
 

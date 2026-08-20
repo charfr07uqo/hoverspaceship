@@ -1,7 +1,11 @@
 import React from 'react';
 import { soundManager } from '../audio/soundManager';
 import { DifficultyKey } from '../types/game';
-import { DIFFICULTY_SETTINGS, getDifficultyShieldChargeBonus } from '../constants/gameConfig';
+import {
+  DIFFICULTY_SETTINGS,
+  getDifficultyShieldChargeBonus,
+  getDifficultyStartAutoCannonLevel
+} from '../constants/gameConfig';
 
 const DIFFICULTIES: { key: DifficultyKey; label: string }[] = [
   { key: 'easy', label: 'EASY' },
@@ -31,6 +35,8 @@ export const DifficultySelector: React.FC<DifficultySelectorProps> = ({
   // Difficulties can hand out free reflect-shell charges (EASY does). Surfaced
   // here so the perk is visible at the moment the choice is being made.
   const shieldBonus = getDifficultyShieldChargeBonus(currentDifficulty);
+  // Some difficulties (EASY/NORMAL) fit a free Auto Cannon from the first sector.
+  const cannonLevel = getDifficultyStartAutoCannonLevel(currentDifficulty);
 
   return (
     <>
@@ -38,22 +44,23 @@ export const DifficultySelector: React.FC<DifficultySelectorProps> = ({
         <div className="diff-indicator" />
         {DIFFICULTIES.map((d) => {
           const bonus = getDifficultyShieldChargeBonus(d.key);
+          const cannon = getDifficultyStartAutoCannonLevel(d.key);
+          const perks: string[] = [];
+          if (bonus > 0) perks.push(`+${bonus} reflect shield charge${bonus === 1 ? '' : 's'}`);
+          if (cannon > 0) perks.push('a free Auto Cannon');
           return (
             <button
               key={d.key}
               className={`diff-btn ${currentDifficulty === d.key ? 'active' : ''}`}
               onClick={() => handleSelect(d.key)}
               type="button"
-              title={
-                bonus > 0
-                  ? `${d.label} — grants +${bonus} reflect shield charge${bonus === 1 ? '' : 's'}`
-                  : d.label
-              }
+              title={perks.length > 0 ? `${d.label} — grants ${perks.join(' and ')}` : d.label}
             >
               {d.label}
-              {bonus > 0 && (
+              {(bonus > 0 || cannon > 0) && (
                 <span className="diff-perk-dot" aria-hidden="true">
-                  🛡️
+                  {bonus > 0 && '🛡️'}
+                  {cannon > 0 && '🔫'}
                 </span>
               )}
             </button>
@@ -69,6 +76,9 @@ export const DifficultySelector: React.FC<DifficultySelectorProps> = ({
           <span className="diff-perk-note">
             🛡️ +{shieldBonus} SHIELD CHARGE{shieldBonus === 1 ? '' : 'S'} ON EVERY HULL
           </span>
+        )}
+        {cannonLevel > 0 && (
+          <span className="diff-perk-note">🔫 FREE AUTO CANNON FITTED FROM THE START</span>
         )}
       </div>
     </>

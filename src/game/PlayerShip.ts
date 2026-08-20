@@ -1285,6 +1285,31 @@ export class PlayerShip {
     this.applyShieldChargeVisuals();
   }
 
+  /**
+   * Restores a single reflect charge, used by the Power Generator's periodic
+   * trickle-regen. Revives a fully broken shell (0 -> 1) or tops a worn-down
+   * multi-charge shield back up one pip at a time. Returns true if a charge was
+   * actually added, false when already at capacity.
+   */
+  public regenerateShieldCharge(): boolean {
+    if (this.shieldCharges >= this.maxShieldCharges) return false;
+
+    const wasBroken = !this.hasShield;
+    this.hasShield = true;
+    this.shieldCharges = Math.min(this.maxShieldCharges, this.shieldCharges + 1);
+
+    // A revived shell plays the full materialisation; a partial top-up just
+    // pops so the new pip reads without the long power-up animation.
+    this.startShieldPowerUp(
+      wasBroken ? SHIELD_POWER_UP_DURATION_SEC : SHIELD_IMPACT_REPOP_DURATION_SEC
+    );
+    if (!this.isHangar) {
+      this.shieldGroup.visible = true;
+    }
+    this.applyShieldChargeVisuals();
+    return true;
+  }
+
   /** Arms the materialisation animation over `durationSec` of wall-clock time. */
   private startShieldPowerUp(durationSec: number): void {
     this.isShieldPoweringUp = true;

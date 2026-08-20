@@ -61,6 +61,8 @@ interface RawDifficulty {
   themeGlow: string;
   // Opt-in: extra reflect charges handed out by the difficulty (EASY only today).
   shieldChargeBonus?: number;
+  // Opt-in: Auto Cannon tier fitted for free at the start of a run (EASY/NORMAL).
+  startAutoCannonLevel?: number;
   blurb: string;
 }
 
@@ -434,7 +436,8 @@ export const DIFFICULTY_SETTINGS: Record<DifficultyKey, DifficultyConfig> = Obje
         ...d,
         themeColorHex: hexToNumber(d.themeColor),
         // Normalised so consumers never have to handle undefined.
-        shieldChargeBonus: d.shieldChargeBonus ?? 0
+        shieldChargeBonus: d.shieldChargeBonus ?? 0,
+        startAutoCannonLevel: d.startAutoCannonLevel ?? 0
       }
     ];
   })
@@ -443,6 +446,10 @@ export const DIFFICULTY_SETTINGS: Record<DifficultyKey, DifficultyConfig> = Obje
 /** Extra reflect-shell charges a difficulty grants on top of the hull rating. */
 export const getDifficultyShieldChargeBonus = (difficulty: DifficultyKey): number =>
   DIFFICULTY_SETTINGS[difficulty]?.shieldChargeBonus ?? 0;
+
+/** Auto Cannon tier a difficulty fits for free at the start of a run (0 = none). */
+export const getDifficultyStartAutoCannonLevel = (difficulty: DifficultyKey): number =>
+  DIFFICULTY_SETTINGS[difficulty]?.startAutoCannonLevel ?? 0;
 
 // ---------------------------------------------------------------------------
 // Ship color options (colorHex derived from color)
