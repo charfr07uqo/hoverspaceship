@@ -1,17 +1,19 @@
 import React from 'react';
-import { SHIPS_CONFIG } from '../constants/gameConfig';
+import { SHIPS_CONFIG, SHIP_IDS, computeShieldCharges } from '../constants/gameConfig';
 import { ShipModelId } from '../types/game';
 import { soundManager } from '../audio/soundManager';
 
 interface ShipSelectorProps {
-  currentShipModel: ShipModelId;
+  /** Hull currently on show. Browsing locked hulls is how the player shops. */
+  browsedShipModel: ShipModelId;
+  /** Hull the player flies. Changing it requires an explicit EQUIP. */
+  equippedShipModel: ShipModelId;
   unlockedShips: ShipModelId[];
   totalGems: number;
-  onSelectShip: (modelId: ShipModelId) => void;
-  onUnlockShip: (modelId: ShipModelId, cost: number) => void;
+  onBrowseShip: (modelId: ShipModelId) => void;
+  onEquipShip: (modelId: ShipModelId) => void;
+  onUnlockShip: (modelId: ShipModelId) => void;
 }
-
-const SHIP_IDS: ShipModelId[] = ['dart', 'viper', 'titan', 'phantom', 'valkyrie'];
 
 /** Highest shield charge rating the pip readout can display. */
 const MAX_SHIELD_PIPS = 5;
@@ -38,40 +40,55 @@ const renderShieldPips = (charges: number) => {
 };
 
 export const ShipSelector: React.FC<ShipSelectorProps> = ({
-  currentShipModel,
+  browsedShipModel,
+  equippedShipModel,
   unlockedShips,
   totalGems,
-  onSelectShip,
+  onBrowseShip,
+  onEquipShip,
   onUnlockShip
 }) => {
-  const currentConfig = SHIPS_CONFIG[currentShipModel];
-  const isUnlocked = unlockedShips.includes(currentShipModel);
+  const currentConfig = SHIPS_CONFIG[browsedShipModel];
+  const isUnlocked = unlockedShips.includes(browsedShipModel);
+  const isEquipped = browsedShipModel === equippedShipModel;
+  const canAfford = totalGems >= currentConfig.cost;
+  // Hangar preview: the hull's own rating, before any in-run module bonus.
+  const hullShieldCharges = computeShieldCharges(browsedShipModel);
 
-  const handleSelectShip = (modelId: ShipModelId) => {
+  /** Browsing only. Never equips, so locked hulls stay safe to look at. */
+  const handleBrowse = (modelId: ShipModelId) => {
     soundManager.init();
-    if (modelId !== currentShipModel) {
+    if (modelId !== browsedShipModel) {
       soundManager.playDiffSwitchSound('normal');
-      onSelectShip(modelId);
+      onBrowseShip(modelId);
     }
   };
 
   const handlePrev = () => {
-    const idx = SHIP_IDS.indexOf(currentShipModel);
+    const idx = SHIP_IDS.indexOf(browsedShipModel);
     const prevIdx = (idx - 1 + SHIP_IDS.length) % SHIP_IDS.length;
-    handleSelectShip(SHIP_IDS[prevIdx]);
+    handleBrowse(SHIP_IDS[prevIdx]);
   };
 
   const handleNext = () => {
-    const idx = SHIP_IDS.indexOf(currentShipModel);
+    const idx = SHIP_IDS.indexOf(browsedShipModel);
     const nextIdx = (idx + 1) % SHIP_IDS.length;
-    handleSelectShip(SHIP_IDS[nextIdx]);
+    handleBrowse(SHIP_IDS[nextIdx]);
+  };
+
+  const handleEquip = () => {
+    soundManager.init();
+    if (isUnlocked && !isEquipped) {
+      soundManager.playDiffSwitchSound('normal');
+      onEquipShip(browsedShipModel);
+    }
   };
 
   const handleUnlock = () => {
     soundManager.init();
-    if (!isUnlocked && totalGems >= currentConfig.cost) {
+    if (!isUnlocked && canAfford) {
       soundManager.playGemSound();
-      onUnlockShip(currentShipModel, currentConfig.cost);
+      onUnlockShip(browsedShipModel);
     }
   };
 
@@ -88,7 +105,7 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
           <span className="ship-tagline">{currentConfig.tagline}</span>
           {/* Read-only position marker now that the per-ship tabs are gone */}
           <span className="ship-index-counter">
-            HULL {SHIP_IDS.indexOf(currentShipModel) + 1} / {SHIP_IDS.length}
+            HULL {SHIP_IDS.indexOf(browsedShipModel) + 1} / {SHIP_IDS.length}
           </span>
         </div>
 
@@ -117,9 +134,9 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         <div className="stat-pill" title="Impacts the reflect shield can absorb before it breaks">
           <span className="stat-pill-label">SHIELD</span>
           <span className="stat-pill-value">
-            {currentConfig.shieldCharges} HIT{currentConfig.shieldCharges === 1 ? '' : 'S'}
+            {hullShieldCharges} HIT{hullShieldCharges === 1 ? '' : 'S'}
           </span>
-          {renderShieldPips(currentConfig.shieldCharges)}
+          {renderShieldPips(hullShieldCharges)}
         </div>
       </div>
 
@@ -131,24 +148,28 @@ export const ShipSelector: React.FC<ShipSelectorProps> = ({
         </div>
       )}
 
-      {/* Unlock / Select Status */}
+      {/* Unlock / Equip status. Three states: locked, owned, equipped. */}
       <div className="ship-action-container">
-        {isUnlocked ? (
-          <div className="unlocked-badge">
-            ✓ SELECTED & READY
-          </div>
-        ) : (
+        {!isUnlocked ? (
           <button
             type="button"
-            className={`btn-unlock ${totalGems >= currentConfig.cost ? 'can-afford' : 'cannot-afford'}`}
+            className={`btn-unlock ${canAfford ? 'can-afford' : 'cannot-afford'}`}
             onClick={handleUnlock}
-            disabled={totalGems < currentConfig.cost}
+            disabled={!canAfford}
           >
-            {totalGems >= currentConfig.cost ? (
+            {canAfford ? (
               <>UNLOCK {currentConfig.name.toUpperCase()} (💎 {currentConfig.cost})</>
             ) : (
               <>NEED 💎 {currentConfig.cost} (VAULT: {totalGems})</>
             )}
+          </button>
+        ) : isEquipped ? (
+          <div className="unlocked-badge">
+            ✓ EQUIPPED & READY
+          </div>
+        ) : (
+          <button type="button" className="btn-unlock can-afford" onClick={handleEquip}>
+            EQUIP {currentConfig.name.toUpperCase()}
           </button>
         )}
       </div>

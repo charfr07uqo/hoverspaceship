@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import { soundManager } from '../audio/soundManager';
 import { Bounds, GameState, ShipModelId } from '../types/game';
-import { SHIPS_CONFIG } from '../constants/gameConfig';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { SHIPS_CONFIG, computeShieldCharges } from '../constants/gameConfig';
 import { makeFin, makePlanform, makeRevolvedHull } from './hullGeometry';
 
 /**
@@ -17,8 +20,46 @@ const SHIELD_OPACITY_SCALE = 0.6;
  */
 const SHIELD_WIRE_BASE_OPACITY = 0.18;
 
+/**
+ * Radius factors of the concentric Reflect shells, outermost first. One shell is
+ * lit per remaining charge, so a 3-charge shell reads as three nested crystal
+ * cages. The outermost stays at 1.0 so the collision radius is identical no
+ * matter how many charges the hull carries.
+ */
+const SHIELD_LAYER_RADIUS_FACTORS = [1.0, 0.9, 0.8];
+
+/** Charges beyond this are expressed as band thickness instead of a new shell. */
+const SHIELD_MAX_LAYERS = SHIELD_LAYER_RADIUS_FACTORS.length;
+
+/**
+ * Per-shell brightness. Inner shells are dimmer so they read as backing layers
+ * seen through the outer cage rather than three equally-weighted spheres.
+ */
+const SHIELD_LAYER_DIM = [1.0, 0.7, 0.5];
+
+/**
+ * Screen-space thickness (in CSS pixels) of the leading-face reinforcement band
+ * per charge past `SHIELD_MAX_LAYERS`, and the cap it saturates at. So 4 charges
+ * draws a 1px band, 5 draws 2px, and 6 or more draws 3px.
+ */
+const SHIELD_FRONT_BAND_PX_PER_CHARGE = 1;
+const SHIELD_FRONT_BAND_MAX_PX = 3;
+
+/** Band opacity at full charge, before SHIELD_OPACITY_SCALE is applied. */
+const SHIELD_FRONT_BAND_OPACITY = 0.5;
+
 /** Base hull collision radius at sizeScale 1.0, before the ship model scales it. */
 const HULL_BASE_RADIUS = 11;
+
+/** One concentric crystal shell of the Reflect shield. */
+interface ShieldLayer {
+  /** Holds the shell's plate mesh and shard outlines at this layer's radius. */
+  group: THREE.Group;
+  plateMat: THREE.ShaderMaterial;
+  wireMat: THREE.ShaderMaterial;
+  /** Brightness multiplier from SHIELD_LAYER_DIM. */
+  dim: number;
+}
 
 /** Hull-local attachment points for the shop module hardware. */
 interface ModuleMounts {
@@ -77,6 +118,15 @@ const SHIELD_GEOMETRY_RADIUS = 24;
  * shell, which is what constrained the original framing on the title screen.
  */
 const HANGAR_SHOWCASE_ZOOM = 1.5;
+
+/**
+ * Baseline magnification for every showcase stage (title screen and hangar
+ * alike). The stage rectangles in ui.css were grown by the same factor, so the
+ * hull still sits inside its frame the way it always did — it just reads 50%
+ * larger on screen. GameEngine's stage-height reference was scaled to match, so
+ * the measured `fit` factor is unaffected by the taller rectangles.
+ */
+const SHOWCASE_ZOOM = 1.5;
 
 /** Resting scale of the shield group in flight, relative to the ship's sizeScale. */
 const SHIELD_REST_SCALE = 1.18;
@@ -426,10 +476,30 @@ export class PlayerShip {
   /** Extra charges layered on top of the hull rating by modules. */
   public bonusShieldCharges = 0;
   private shieldGroup: THREE.Group;
-  private shieldMesh!: THREE.Mesh;
-  private shieldWireframe!: THREE.LineSegments;
-  private shieldShaderMat!: THREE.ShaderMaterial;
-  private shieldWireMat!: THREE.ShaderMaterial;
+  /** Concentric crystal shells, outermost first. One is lit per charge. */
+  private shieldLayers: ShieldLayer[] = [];
+  /**
+   * Thick outline on the leading face only, used to express charges the three
+   * concentric shells have run out of room for.
+   */
+  private shieldFrontBand: LineSegments2 | null = null;
+  private shieldFrontBandMat: LineMaterial | null = null;
+  /** Shared uniform feeding the band's front-face mask, refreshed per frame. */
+  private shieldFrontBandForward: { value: THREE.Vector3 } | null = null;
+  /**
+   * Band opacity at the current charge count, before the materialisation fade.
+   * The plate shader fades itself in via `uForm`; the band has no such term, so
+   * its opacity is scaled on the CPU instead.
+   */
+  private shieldFrontBandBaseOpacity = SHIELD_FRONT_BAND_OPACITY * SHIELD_OPACITY_SCALE;
+  /**
+   * Canvas size in CSS pixels. LineMaterial needs this to convert its pixel
+   * linewidth into clip space, so the band is exactly as thick as advertised.
+   */
+  private viewportResolution = new THREE.Vector2(
+    typeof window === 'undefined' ? 1920 : window.innerWidth,
+    typeof window === 'undefined' ? 1080 : window.innerHeight
+  );
   private shieldBubbleMat!: THREE.ShaderMaterial;
   private shieldSparkles: THREE.Sprite[] = [];
   private shieldTwinkleTime = 0;
@@ -794,7 +864,132 @@ export class PlayerShip {
     // --- Crystal plate shell: the actual KH2 Reflect look ---
     const { plateGeo, rimGeo } = this.buildCrystalPlates(shieldRadius);
 
-    this.shieldShaderMat = new THREE.ShaderMaterial({
+    // Concentric shells, one lit per remaining charge. They share the plate and
+    // rim geometry and are simply scaled down to nest inside each other, so the
+    // extra layers cost nothing but a couple of draw calls.
+    for (let i = 0; i < SHIELD_MAX_LAYERS; i++) {
+      const layerGroup = new THREE.Group();
+      layerGroup.scale.setScalar(SHIELD_LAYER_RADIUS_FACTORS[i]);
+
+      const plateMat = this.createShieldPlateMaterial();
+      const wireMat = this.createShieldWireMaterial();
+      // Offset each shell's clock so the layers shimmer out of phase rather than
+      // breathing in lockstep, which would read as one thick sphere.
+      plateMat.uniforms.uTime.value = i * 7.3;
+      wireMat.uniforms.uTime.value = i * 7.3;
+
+      // Plates are unsorted transparent geometry; render after the hull so the
+      // ship shows through, with the shard outlines on top of the plates.
+      const plates = new THREE.Mesh(plateGeo, plateMat);
+      plates.renderOrder = 3;
+      layerGroup.add(plates);
+
+      const wire = new THREE.LineSegments(rimGeo, wireMat);
+      wire.renderOrder = 4;
+      layerGroup.add(wire);
+
+      this.shieldGroup.add(layerGroup);
+      this.shieldLayers.push({
+        group: layerGroup,
+        plateMat,
+        wireMat,
+        dim: SHIELD_LAYER_DIM[i]
+      });
+    }
+
+    this.buildShieldFrontBand(rimGeo);
+    this.buildShieldSparkles(shieldRadius);
+  }
+
+  /**
+   * Thick outline riding the outer shell's leading face.
+   *
+   * Once the shell carries more charges than there are concentric layers, the
+   * surplus is expressed as line thickness instead of yet another sphere. Plain
+   * `THREE.LineSegments` cannot do that - WebGL ignores `linewidth` - so this
+   * uses `LineSegments2`, whose quad-expanded segments take a real pixel width.
+   *
+   * The band reuses the full rim geometry and masks itself down to the leading
+   * cap in the fragment shader with the same `uForward` term the plates use.
+   * Masking in the shader rather than trimming the geometry is what keeps the
+   * band pinned to the ship's +X face while the shell itself keeps spinning.
+   */
+  private buildShieldFrontBand(rimGeo: THREE.BufferGeometry): void {
+    const rimPos = rimGeo.getAttribute('position');
+    const positions = new Float32Array(rimPos.count * 3);
+    positions.set(rimPos.array as ArrayLike<number>);
+
+    const bandGeo = new LineSegmentsGeometry();
+    bandGeo.setPositions(positions);
+
+    const mat = new LineMaterial({
+      color: 0xffffff,
+      linewidth: SHIELD_FRONT_BAND_PX_PER_CHARGE,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    mat.opacity = SHIELD_FRONT_BAND_OPACITY * SHIELD_OPACITY_SCALE;
+    mat.resolution.copy(this.viewportResolution);
+
+    // One uniform object shared between the material and the patched program, so
+    // it does not matter which of the two the renderer ends up reading.
+    const uForward = { value: new THREE.Vector3(1, 0, 0) };
+    mat.uniforms.uForward = uForward;
+    this.shieldFrontBandForward = uForward;
+
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uForward = uForward;
+
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          'attribute vec3 instanceStart;',
+          `attribute vec3 instanceStart;
+           varying vec3 vShieldDir;`
+        )
+        .replace(
+          'float aspect = resolution.x / resolution.y;',
+          `vShieldDir = normalize( ( position.y < 0.5 ) ? instanceStart : instanceEnd );
+           float aspect = resolution.x / resolution.y;`
+        );
+
+      shader.fragmentShader = shader.fragmentShader
+        .replace(
+          'uniform float linewidth;',
+          `uniform float linewidth;
+           uniform vec3 uForward;
+           varying vec3 vShieldDir;`
+        )
+        .replace(
+          'gl_FragColor = vec4( diffuseColor.rgb, alpha );',
+          `// Leading cap only: identical thresholds to the plate shader's
+           // frontCap, so the thick band lines up with the brightest shards.
+           float shieldFacing = dot( normalize( vShieldDir ), normalize( uForward ) );
+           float shieldFront = smoothstep( 0.30, 0.62, shieldFacing );
+           if ( shieldFront <= 0.002 ) discard;
+           gl_FragColor = vec4( diffuseColor.rgb, alpha * shieldFront );`
+        );
+    };
+    // Keeps the patched program out of the cache slot of a stock LineMaterial.
+    mat.customProgramCacheKey = () => 'shieldFrontBand';
+
+    const band = new LineSegments2(bandGeo, mat);
+    band.frustumCulled = false;
+    band.renderOrder = 4;
+    band.visible = false;
+    this.shieldGroup.add(band);
+
+    this.shieldFrontBand = band;
+    this.shieldFrontBandMat = mat;
+  }
+
+  /**
+   * Crystal plate shader for a single shell: frosted shards with a hot bevel, a
+   * per-plate shimmer clock, and a longitudinal fade that keeps the fully
+   * powered region to a narrow cap on the ship's leading face.
+   */
+  private createShieldPlateMaterial(): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uColor: { value: new THREE.Color(this.shipColorHex) },
@@ -923,19 +1118,16 @@ export class PlayerShip {
       depthWrite: false,
       blending: THREE.NormalBlending
     });
+  }
 
-    this.shieldMesh = new THREE.Mesh(plateGeo, this.shieldShaderMat);
-    // Plates are unsorted transparent geometry; render after the hull so the ship
-    // shows through them.
-    this.shieldMesh.renderOrder = 3;
-    this.shieldGroup.add(this.shieldMesh);
-
-    // Crisp outline on every hex/pent shard - this is what makes the faceting
-    // legible at small on-screen sizes.
-    // Outlines follow the same front/middle/back falloff as the plates, otherwise
-    // they paint a uniform white cage over the whole sphere and the back never
-    // reads as transparent.
-    this.shieldWireMat = new THREE.ShaderMaterial({
+  /**
+   * Crisp outline on every hex/pent shard - this is what makes the faceting
+   * legible at small on-screen sizes. Outlines follow the same front/middle/back
+   * falloff as the plates, otherwise they paint a uniform white cage over the
+   * whole sphere and the back never reads as transparent.
+   */
+  private createShieldWireMaterial(): THREE.ShaderMaterial {
+    return new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uOpacity: { value: SHIELD_WIRE_BASE_OPACITY * SHIELD_OPACITY_SCALE },
@@ -974,11 +1166,10 @@ export class PlayerShip {
       blending: THREE.AdditiveBlending,
       depthWrite: false
     });
-    this.shieldWireframe = new THREE.LineSegments(rimGeo, this.shieldWireMat);
-    this.shieldWireframe.renderOrder = 4;
-    this.shieldGroup.add(this.shieldWireframe);
+  }
 
-    // --- Sparkle flares orbiting the shell ---
+  /** Sparkle flares orbiting the shell, spread on a golden-angle spiral. */
+  private buildShieldSparkles(shieldRadius: number): void {
     const sparkleTex = this.createSparkleTexture();
     for (let i = 0; i < 7; i++) {
       const sprite = new THREE.Sprite(
@@ -1091,7 +1282,7 @@ export class PlayerShip {
       this.shieldGroup.visible = true;
     }
     // A freshly cast shell is always at full strength.
-    this.applyShieldChargeTint();
+    this.applyShieldChargeVisuals();
   }
 
   /** Arms the materialisation animation over `durationSec` of wall-clock time. */
@@ -1109,12 +1300,11 @@ export class PlayerShip {
    * new run); otherwise the remaining charges are only clamped to the new cap.
    */
   public refreshShieldCharges(refill: boolean): void {
-    const config = SHIPS_CONFIG[this.shipModelId] || SHIPS_CONFIG.dart;
-    this.maxShieldCharges = Math.max(1, config.shieldCharges + this.bonusShieldCharges);
+    this.maxShieldCharges = computeShieldCharges(this.shipModelId, this.bonusShieldCharges);
     this.shieldCharges = refill
       ? this.maxShieldCharges
       : Math.min(this.shieldCharges, this.maxShieldCharges);
-    this.applyShieldChargeTint();
+    this.applyShieldChargeVisuals();
   }
 
   /**
@@ -1128,7 +1318,7 @@ export class PlayerShip {
     this.refreshShieldCharges(false);
     if (delta > 0 && this.hasShield) {
       this.shieldCharges = Math.min(this.maxShieldCharges, this.shieldCharges + delta);
-      this.applyShieldChargeTint();
+      this.applyShieldChargeVisuals();
     }
   }
 
@@ -1147,7 +1337,7 @@ export class PlayerShip {
       // Shell held: replay the materialisation pop so the hit reads visually,
       // and re-tint the remaining layers to show it is running on reserves.
       this.startShieldPowerUp(SHIELD_IMPACT_REPOP_DURATION_SEC);
-      this.applyShieldChargeTint();
+      this.applyShieldChargeVisuals();
       return false;
     }
 
@@ -1162,24 +1352,60 @@ export class PlayerShip {
   }
 
   /**
-   * Thins the shell as charges are spent so a multi-charge shield visibly
-   * weakens instead of silently soaking hits. Recomputed from the tuned base
-   * opacities every call, so it never compounds across hits.
+   * Redraws the shell for the current charge count.
+   *
+   * Two things communicate strength. Charges pick how many concentric shells are
+   * lit - one each up to `SHIELD_MAX_LAYERS` - and every charge past that
+   * thickens the leading-face band by one pixel, capped at
+   * `SHIELD_FRONT_BAND_MAX_PX`. On top of that the whole shell thins out as a
+   * multi-charge shield is worn down, so spending a charge always reads even
+   * when the layer count has not changed.
+   *
+   * Everything is recomputed from the tuned base opacities each call, so repeated
+   * hits never compound the dimming.
    */
-  private applyShieldChargeTint(): void {
+  private applyShieldChargeVisuals(): void {
     const strength =
       this.maxShieldCharges <= 1 ? 1 : Math.max(1, this.shieldCharges) / this.maxShieldCharges;
     const factor = 0.5 + 0.5 * strength;
 
-    if (this.shieldShaderMat?.uniforms.uOpacityScale) {
-      this.shieldShaderMat.uniforms.uOpacityScale.value = SHIELD_OPACITY_SCALE * factor;
-    }
     if (this.shieldBubbleMat?.uniforms.uOpacityScale) {
       this.shieldBubbleMat.uniforms.uOpacityScale.value = SHIELD_OPACITY_SCALE * factor;
     }
-    if (this.shieldWireMat?.uniforms.uOpacity) {
-      this.shieldWireMat.uniforms.uOpacity.value = SHIELD_WIRE_BASE_OPACITY * SHIELD_OPACITY_SCALE * factor;
+
+    // One shell per remaining charge. A broken shell hides the whole group, so
+    // the floor of 1 here only guards the moment before that happens.
+    const litLayers = Math.min(SHIELD_MAX_LAYERS, Math.max(1, this.shieldCharges));
+    for (let i = 0; i < this.shieldLayers.length; i++) {
+      const layer = this.shieldLayers[i];
+      layer.group.visible = i < litLayers;
+      if (!layer.group.visible) continue;
+      layer.plateMat.uniforms.uOpacityScale.value = SHIELD_OPACITY_SCALE * factor * layer.dim;
+      layer.wireMat.uniforms.uOpacity.value =
+        SHIELD_WIRE_BASE_OPACITY * SHIELD_OPACITY_SCALE * factor * layer.dim;
     }
+
+    // Surplus charges thicken the leading-face band instead of adding shells.
+    if (this.shieldFrontBand && this.shieldFrontBandMat) {
+      const surplus = Math.max(0, this.shieldCharges - SHIELD_MAX_LAYERS);
+      const widthPx = Math.min(
+        SHIELD_FRONT_BAND_MAX_PX,
+        surplus * SHIELD_FRONT_BAND_PX_PER_CHARGE
+      );
+      this.shieldFrontBand.visible = widthPx > 0;
+      this.shieldFrontBandMat.linewidth = widthPx;
+      this.shieldFrontBandBaseOpacity = SHIELD_FRONT_BAND_OPACITY * SHIELD_OPACITY_SCALE * factor;
+    }
+  }
+
+  /**
+   * Canvas size in CSS pixels, forwarded by the engine on creation and on every
+   * resize. The leading-face band's thickness is specified in pixels, which
+   * LineMaterial can only convert to clip space if it knows the viewport.
+   */
+  public setViewportResolution(width: number, height: number): void {
+    this.viewportResolution.set(Math.max(1, width), Math.max(1, height));
+    this.shieldFrontBandMat?.resolution.copy(this.viewportResolution);
   }
 
   /**
@@ -2491,8 +2717,8 @@ export class PlayerShip {
     if (this.cockpitMesh && this.cockpitMesh.material) {
       (this.cockpitMesh.material as THREE.MeshStandardMaterial).emissive.setHex(colorHex);
     }
-    if (this.shieldShaderMat && this.shieldShaderMat.uniforms.uColor) {
-      this.shieldShaderMat.uniforms.uColor.value.setHex(colorHex);
+    for (const layer of this.shieldLayers) {
+      layer.plateMat.uniforms.uColor.value.setHex(colorHex);
     }
     if (this.shieldBubbleMat && this.shieldBubbleMat.uniforms.uColor) {
       this.shieldBubbleMat.uniforms.uColor.value.setHex(colorHex);
@@ -2611,7 +2837,7 @@ export class PlayerShip {
       // It can afford the tighter framing because the shield shell (the widest
       // thing on the title stage) is hidden there.
       const fit = this.showcaseAnchor ? this.showcaseAnchor.scale : 1;
-      const zoom = this.isHangar ? HANGAR_SHOWCASE_ZOOM : 1;
+      const zoom = SHOWCASE_ZOOM * (this.isHangar ? HANGAR_SHOWCASE_ZOOM : 1);
       const showcaseScale = Math.min(1.15, this.sizeScale * 0.95) * fit * zoom;
       this.shipModelGroup.scale.set(showcaseScale, showcaseScale, showcaseScale);
 
@@ -2763,15 +2989,24 @@ export class PlayerShip {
         this.shieldGroup.quaternion.clone().invert()
       );
 
-      // Update shader time for holographic surface shimmer
-      if (this.shieldShaderMat && this.shieldShaderMat.uniforms.uTime) {
-        this.shieldShaderMat.uniforms.uTime.value += 0.03;
-        this.shieldShaderMat.uniforms.uForm.value = this.shieldPowerUpProgress;
-        this.shieldShaderMat.uniforms.uForward.value.copy(localForward);
+      // Update shader time for holographic surface shimmer. Every concentric
+      // shell and the leading-face band share the same forward axis so their
+      // bright caps stay stacked on the direction of travel.
+      for (const layer of this.shieldLayers) {
+        layer.plateMat.uniforms.uTime.value += 0.03;
+        layer.plateMat.uniforms.uForm.value = this.shieldPowerUpProgress;
+        layer.plateMat.uniforms.uForward.value.copy(localForward);
+        layer.wireMat.uniforms.uTime.value += 0.03;
+        layer.wireMat.uniforms.uForward.value.copy(localForward);
       }
-      if (this.shieldWireMat && this.shieldWireMat.uniforms.uTime) {
-        this.shieldWireMat.uniforms.uTime.value += 0.03;
-        this.shieldWireMat.uniforms.uForward.value.copy(localForward);
+      if (this.shieldFrontBandForward) {
+        this.shieldFrontBandForward.value.copy(localForward);
+      }
+      if (this.shieldFrontBandMat) {
+        // Match the plates' flash-in so the band does not sit fully lit on the
+        // pinhead-sized shell at the start of a materialisation.
+        const formIn = Math.min(1, this.shieldPowerUpProgress / 0.45);
+        this.shieldFrontBandMat.opacity = this.shieldFrontBandBaseOpacity * formIn;
       }
       if (this.shieldBubbleMat && this.shieldBubbleMat.uniforms.uTime) {
         this.shieldBubbleMat.uniforms.uTime.value += 0.03;

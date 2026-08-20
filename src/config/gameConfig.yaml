@@ -49,13 +49,13 @@ enemy:
   # sizeMultiplier / speedMultiplier are applied on top of the base drone stats.
   variants:
     heavy:
-      # Bigger, slightly slower interceptors. Unlocks at level 5.
+      # Bigger, slower interceptors. Unlocks at level 5.
       label: Heavy
       icon: "🛑"
       unlockLevel: 5
       spawnChance: 0.30
-      sizeMultiplier: 1.6
-      speedMultiplier: 0.85
+      sizeMultiplier: 1.28
+      speedMultiplier: 0.68
       accentColor: "#fb923c"
     scout:
       # Half-size, 30% faster interceptors. Unlocks at level 10.
@@ -118,9 +118,13 @@ modules:
   # Maximum tier any module can reach.
   maxTier: 5
   # Power Generator: delay (seconds) before a broken shield regenerates, per tier.
-  shieldRegenDelaysSec: [20, 18, 15, 12, 10]
+  shieldRegenDelaysSec: [15, 13, 11, 9, 8]
   # Auto Cannon: reload time (seconds) between shots, per tier.
   autoCannonReloadSec: [20, 18, 15, 12, 10]
+  # Reflect Capacitor: extra reflect-shell charges granted, per tier.
+  # Added to the hull's own rating *before* the hull's shieldChargeMultiplier,
+  # so the Titan Dreadnought's +50% special scales with the module.
+  shieldChargeBonuses: [1, 2, 3, 4, 5]
   # Scanner Array: extra viewing distance (percent) revealed ahead, per tier.
   # Each tier widens the horizontal view and peels back the right-side fog of
   # war without changing the vertical framing.
@@ -144,6 +148,11 @@ modules:
       icon: "🛰️"
       blurb: Widens your sensor range, burning back the fog of war ahead.
       unit: "% range"
+    shieldCell:
+      name: Reflect Capacitor
+      icon: "🔋"
+      blurb: Stacks extra charges onto your reflect shell.
+      unit: " charges"
 
 # ---------------------------------------------------------------------------
 # Difficulty & progression scaling coefficients
@@ -179,11 +188,16 @@ simulation:
 #   shieldCharges - impacts the reflect shell can absorb before it breaks.
 #                   Designed to be upgradable later (a module can add charges
 #                   on top of the hull's own rating).
+#   shieldChargeMultiplier
+#                 - scales the hull's charge rating *after* any module bonus has
+#                   been added, then rounds up. A 1.5 multiplier therefore reads
+#                   as "+50% shields": 1 -> 2, 2 -> 3, 3 -> 5, 4 -> 6.
 #   trueVision    - disguised bombs never morph back into their gem disguise.
 #                   Also intended to become a purchasable module perk.
 # ---------------------------------------------------------------------------
 shipDefaults:
   shieldCharges: 1
+  shieldChargeMultiplier: 1.0
   trueVision: false
 
 ships:
@@ -226,9 +240,10 @@ ships:
     sizeStars: 1
     speedStars: 1
     reactivityStars: 1
-    # Special: reinforced reflect shell soaks an extra impact.
-    shieldCharges: 2
-    special: Reinforced Reflect — shield soaks 2 hits before breaking
+    # Special: reinforced reflect shell carries half again as many charges as
+    # the rest of the fleet, rounded up, so module bonuses scale with it too.
+    shieldChargeMultiplier: 1.5
+    special: Reinforced Reflect — +50% shield charges (rounded up)
   phantom:
     name: Pulse Oracle
     tagline: True-Sight Warp Core
@@ -261,6 +276,15 @@ ships:
 
 # ---------------------------------------------------------------------------
 # Difficulty settings (themeColorHex is derived from themeColor)
+#
+# shieldChargeBonus - extra reflect-shell charges the difficulty hands the pilot,
+#                     summed with any Reflect Capacitor bonus *before* the hull's
+#                     shieldChargeMultiplier, so ship specials still scale with
+#                     it. Omitted means 0.
+# blurb             - one-line summary of what this difficulty changes, shown
+#                     under the difficulty picker and in the sector simulator.
+#                     Phrased relative to NORMAL, which is the baseline. Keep it
+#                     in sync with the numbers above when rebalancing.
 # ---------------------------------------------------------------------------
 difficulties:
   easy:
@@ -273,6 +297,9 @@ difficulties:
     spawnInterval: 160
     themeColor: "#22c55e"
     themeGlow: rgba(34, 197, 94, 0.4)
+    # Training wheels: one free extra reflect charge on every hull.
+    shieldChargeBonus: 1
+    blurb: Slowest scroll, widest gaps and the thinnest rock fields. Nothing sways and drifting rocks are at their slowest.
   normal:
     label: NORMAL
     baseSpeed: 2.1
@@ -283,6 +310,7 @@ difficulties:
     spawnInterval: 140
     themeColor: "#38bdf8"
     themeGlow: rgba(56, 189, 248, 0.4)
+    blurb: The baseline run. Steady scroll, standard gaps, and 1 in 5 formations sways.
   hard:
     label: HARD
     baseSpeed: 2.6
@@ -293,6 +321,7 @@ difficulties:
     spawnInterval: 120
     themeColor: "#ef4444"
     themeGlow: rgba(239, 68, 68, 0.4)
+    blurb: Quicker scroll, tighter gaps and denser fields. 2 in 5 formations sway and drifting rocks pick up pace.
   exhard:
     label: EX-HARD
     baseSpeed: 3.2
@@ -303,6 +332,7 @@ difficulties:
     spawnInterval: 105
     themeColor: "#c084fc"
     themeGlow: rgba(192, 132, 252, 0.5)
+    blurb: Top scroll speed, narrowest gaps and the densest fields. 3 in 5 formations sway and drifting rocks are fastest.
 
 # ---------------------------------------------------------------------------
 # Ship color options (colorHex is derived from color)

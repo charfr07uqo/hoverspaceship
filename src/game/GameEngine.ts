@@ -19,6 +19,8 @@ import {
   MODULE_UPGRADE_COSTS,
   SCANNER_EXTRA_DISTANCE_PCT,
   SHIELD_REGEN_DELAYS_SEC,
+  getShieldChargeBonus,
+  getDifficultyShieldChargeBonus,
   SHIP_COLORS,
   SHIPS_CONFIG
 } from '../constants/gameConfig';
@@ -32,6 +34,17 @@ import { Gem3D } from './GemManager';
 import { ParticleSystem } from './ParticleSystem';
 import { EnemyDrone3D } from './EnemyDrone';
 import { Projectile3D } from './Projectile';
+
+/**
+ * Stage height (world units) the showcase framing is tuned against. A measured
+ * stage taller than this scales the hull up, shorter scales it down (clamped).
+ *
+ * This tracks the `.ship-showcase-viewport` heights in ui.css: both were grown
+ * by PlayerShip's SHOWCASE_ZOOM factor (1.5x, from the original 95 / 220px), so
+ * the fit factor a given screen produces is unchanged and the 50% size increase
+ * comes purely from the zoom.
+ */
+const SHOWCASE_STAGE_REFERENCE = 142.5;
 
 export class GameEngine {
   private container: HTMLElement;
@@ -74,6 +87,7 @@ export class GameEngine {
   public powerGenLevel = 0; // 0 = not owned, 1-5 tiers
   public autoCannonLevel = 0; // 0 = not owned, 1-5 tiers
   public zoomScannerLevel = 0; // 0 = not owned, 1-5 tiers (widens horizontal view)
+  public shieldCellLevel = 0; // 0 = not owned, 1-5 tiers (extra reflect charges)
   private shieldRegenTimer = 0; // seconds elapsed since the shield broke
   private autoCannonTimer = 0; // seconds elapsed since last shot
   private projectiles: Projectile3D[] = [];
@@ -186,6 +200,9 @@ export class GameEngine {
     // Subsystems
     this.starfield = new Starfield(this.scene);
     this.player = new PlayerShip(this.scene);
+    // The shield's leading-face band is sized in CSS pixels, so it needs the
+    // canvas dimensions up front and again on every resize.
+    this.player.setViewportResolution(width, height);
     this.player.reset(this.bounds);
     this.particleSystem = new ParticleSystem(this.scene);
 
@@ -376,8 +393,7 @@ export class GameEngine {
     this.player.showcaseAnchor = {
       x: (cx - 0.5) * visibleWidth,
       y: (0.5 - cy) * visibleHeight,
-      // 95 world units is the stage height the showcase scale was tuned against
-      scale: THREE.MathUtils.clamp(stageWorldHeight / 95, 0.7, 1.15)
+      scale: THREE.MathUtils.clamp(stageWorldHeight / SHOWCASE_STAGE_REFERENCE, 0.7, 1.15)
     };
   }
 
@@ -395,6 +411,7 @@ export class GameEngine {
       this.composer.setSize(width, height);
       this.bloomPass.setSize(width, height);
     }
+    this.player.setViewportResolution(width, height);
     this.calculateBounds();
     this.updateShowcaseAnchor();
     if (this.gameState === 'START') {
@@ -452,6 +469,23 @@ export class GameEngine {
     this.themeLight.color.setHex(config.themeColorHex);
     this.starfield.setThemeColor(config.themeColorHex);
     this.obstacles.forEach((o) => o.setThemeColor(config.themeColorHex));
+    // EASY hands out a free reflect charge, so the shell has to be re-rated
+    // whenever the difficulty changes (including on the title screen).
+    this.applyShieldChargeBonuses();
+  }
+
+  /**
+   * Re-rates the reflect shell from every source of bonus charges: the current
+   * difficulty's handout plus any Reflect Capacitor tier. They are summed and
+   * handed over as one number so the hull's shieldChargeMultiplier (the Titan's
+   * +50%) still applies on top of the total.
+   */
+  private applyShieldChargeBonuses(): void {
+    if (!this.player) return;
+    this.player.setBonusShieldCharges(
+      getDifficultyShieldChargeBonus(this.currentDifficulty) +
+        getShieldChargeBonus(this.shieldCellLevel)
+    );
   }
 
   public setShipColor(colorKey: ShipColorKey): void {
@@ -557,6 +591,8 @@ export class GameEngine {
         return this.autoCannonLevel;
       case 'zoomScanner':
         return this.zoomScannerLevel;
+      case 'shieldCell':
+        return this.shieldCellLevel;
     }
   }
 
@@ -580,10 +616,16 @@ export class GameEngine {
       // Recompute the viewport so the wider field of view takes effect and the
       // spawn/cull edges follow the newly revealed distance.
       this.calculateBounds();
+    } else if (type === 'shieldCell') {
+      this.shieldCellLevel++;
+      // The hull's own multiplier is applied on top of this bonus, so the Titan
+      // Dreadnought's Reinforced Reflect scales with every tier bought here.
+      this.applyShieldChargeBonuses();
     }
 
     // Reflect the new module tiers on the ship's visuals
     this.applyModuleVisuals();
+    this.emitModuleStatus();
 
     soundManager.playGemSound();
     if (this.callbacks.onGemsUpdate) this.callbacks.onGemsUpdate(this.gemsCollected, this.totalGems);
@@ -649,6 +691,7 @@ export class GameEngine {
       powerGenLevel: this.powerGenLevel,
       autoCannonLevel: this.autoCannonLevel,
       zoomScannerLevel: this.zoomScannerLevel,
+      shieldCellLevel: this.shieldCellLevel,
       shieldActive: this.player.hasShield,
       shieldRegenProgress,
       cannonProgress,
@@ -714,12 +757,13 @@ export class GameEngine {
     this.powerGenLevel = 0;
     this.autoCannonLevel = 0;
     this.zoomScannerLevel = 0;
+    this.shieldCellLevel = 0;
     this.shieldRegenTimer = 0;
     this.autoCannonTimer = 0;
     this.trueVisionModuleLevel = 0;
     this.applyModuleVisuals();
-    // Drop any module-granted shield charges back to the hull's own rating.
-    this.player.setBonusShieldCharges(0);
+    // Drop module-granted shield charges, keeping only the difficulty handout.
+    this.applyShieldChargeBonuses();
     // Reset the viewport back to the default (un-widened) framing.
     this.calculateBounds();
 

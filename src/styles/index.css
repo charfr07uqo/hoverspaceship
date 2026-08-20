@@ -158,3 +158,70 @@ html, body {
 .fog-of-war.is-hidden {
   opacity: 0;
 }
+
+/* ===== Portrait-Only Gate =====
+   The game is authored as a 9:16 portrait frame, so landscape play on a touch
+   device is blocked outright rather than rendered as an unplayable sliver. The
+   visibility condition lives in OrientationGate.tsx (matchMedia) so React can
+   also pause the simulation; these rules only style the resulting overlay. */
+.orientation-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: calc(16px + env(safe-area-inset-top, 0px))
+           calc(16px + env(safe-area-inset-right, 0px))
+           calc(16px + env(safe-area-inset-bottom, 0px))
+           calc(16px + env(safe-area-inset-left, 0px));
+  background: radial-gradient(circle at 50% 50%, #0b1226 0%, #010208 100%);
+  /* Opaque and on top: nothing behind it should be reachable while sideways. */
+  touch-action: none;
+}
+
+.orientation-gate-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 420px;
+  text-align: center;
+  padding: 22px 26px;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1.5px solid var(--theme-color, #38bdf8);
+  box-shadow: 0 0 45px var(--theme-glow, rgba(56, 189, 248, 0.4));
+}
+
+.orientation-gate-icon {
+  font-size: 2.4rem;
+  line-height: 1;
+  /* Nudges the phone glyph upright, hinting at the rotation being asked for. */
+  animation: orientation-nudge 1.8s ease-in-out infinite;
+}
+
+.orientation-gate-title {
+  font-size: 1.05rem;
+  font-weight: 900;
+  letter-spacing: 1.6px;
+  color: var(--theme-color, #38bdf8);
+}
+
+.orientation-gate-text {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+@keyframes orientation-nudge {
+  0%, 45%, 100% { transform: rotate(-90deg); }
+  70%, 90% { transform: rotate(0deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orientation-gate-icon {
+    animation: none;
+    transform: none;
+  }
+}

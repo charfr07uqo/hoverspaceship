@@ -5,6 +5,7 @@ import {
   DIFFICULTY_SETTINGS,
   MODULE_META,
   SHIPS_CONFIG,
+  getDifficultyShieldChargeBonus,
   getEnemySpawnSchedule,
   getLevelDuration
 } from '../constants/gameConfig';
@@ -53,6 +54,9 @@ export const HUD: React.FC<HUDProps> = ({
 
   const diffConfig = DIFFICULTY_SETTINGS[currentDifficulty] || DIFFICULTY_SETTINGS.normal;
   const shipConfig = SHIPS_CONFIG[currentShipModel] || SHIPS_CONFIG.dart;
+  // Free reflect charges the difficulty is contributing (EASY only today), so the
+  // shield readout can attribute them rather than looking like a module bonus.
+  const diffShieldBonus = getDifficultyShieldChargeBonus(currentDifficulty);
 
   useEffect(() => {
     if (score > 0) {
@@ -222,9 +226,22 @@ export const HUD: React.FC<HUDProps> = ({
           {moduleStatus.maxShieldCharges > 1 && (
             <div
               className="module-hud-row"
-              title={`Reflect shield — ${moduleStatus.shieldCharges} of ${moduleStatus.maxShieldCharges} charges left`}
+              title={
+                `Reflect shield — ${moduleStatus.shieldCharges} of ${moduleStatus.maxShieldCharges} charges left` +
+                (diffShieldBonus > 0
+                  ? ` (includes +${diffShieldBonus} from ${diffConfig.label})`
+                  : '')
+              }
             >
               <span className="module-hud-icon">🛡️</span>
+              {moduleStatus.shieldCellLevel > 0 && (
+                <span className="module-hud-lvl">L{moduleStatus.shieldCellLevel}</span>
+              )}
+              {/* Attributes the handout so the extra pip is not mistaken for a
+                  module the player forgot buying. */}
+              {diffShieldBonus > 0 && (
+                <span className="module-hud-lvl diff-bonus-tag">+{diffShieldBonus} {diffConfig.label}</span>
+              )}
               <span className="module-hud-pips">
                 {Array.from({ length: moduleStatus.maxShieldCharges }, (_, idx) => (
                   <span

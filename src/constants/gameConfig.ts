@@ -3,6 +3,7 @@ import {
   DifficultyConfig,
   DifficultyKey,
   LevelSimulation,
+  ModuleType,
   ShipColorConfig,
   ShipColorKey,
   ShipModelId,
@@ -37,12 +38,14 @@ interface RawShipStats {
   reactivityStars: number;
   // Specials are opt-in per ship; anything omitted falls back to shipDefaults.
   shieldCharges?: number;
+  shieldChargeMultiplier?: number;
   trueVision?: boolean;
   special?: string;
 }
 
 interface RawShipDefaults {
   shieldCharges: number;
+  shieldChargeMultiplier: number;
   trueVision: boolean;
 }
 
@@ -56,6 +59,9 @@ interface RawDifficulty {
   spawnInterval: number;
   themeColor: string;
   themeGlow: string;
+  // Opt-in: extra reflect charges handed out by the difficulty (EASY only today).
+  shieldChargeBonus?: number;
+  blurb: string;
 }
 
 interface RawShipColor {
@@ -109,8 +115,9 @@ interface GameConfigFile {
     shieldRegenDelaysSec: number[];
     autoCannonReloadSec: number[];
     scannerExtraDistancePct: number[];
+    shieldChargeBonuses: number[];
     upgradeCosts: number[];
-    meta: Record<'powerGen' | 'autoCannon' | 'zoomScanner', RawModuleMeta>;
+    meta: Record<ModuleType, RawModuleMeta>;
   };
   difficultyAlgorithm: {
     scoreStepForSpeed: number;
@@ -325,6 +332,10 @@ export const AUTO_CANNON_RELOAD_SEC = CONFIG.modules.autoCannonReloadSec;
 // Scanner Array: extra viewing distance (percent of base width) per tier.
 export const SCANNER_EXTRA_DISTANCE_PCT = CONFIG.modules.scannerExtraDistancePct;
 
+// Reflect Capacitor: extra reflect-shell charges granted, per tier. Summed with
+// the hull rating before the hull's multiplier, so ship specials scale with it.
+export const SHIELD_CHARGE_BONUSES = CONFIG.modules.shieldChargeBonuses;
+
 // Gem cost to purchase each successive tier (index 0 = cost to reach tier 1).
 export const MODULE_UPGRADE_COSTS = CONFIG.modules.upgradeCosts;
 
@@ -336,7 +347,7 @@ export interface ModuleMeta {
   unit: string;
 }
 
-export const MODULE_META: Record<'powerGen' | 'autoCannon' | 'zoomScanner', ModuleMeta> = {
+export const MODULE_META: Record<ModuleType, ModuleMeta> = {
   powerGen: {
     ...CONFIG.modules.meta.powerGen,
     tierValues: SHIELD_REGEN_DELAYS_SEC
@@ -348,8 +359,16 @@ export const MODULE_META: Record<'powerGen' | 'autoCannon' | 'zoomScanner', Modu
   zoomScanner: {
     ...CONFIG.modules.meta.zoomScanner,
     tierValues: SCANNER_EXTRA_DISTANCE_PCT
+  },
+  shieldCell: {
+    ...CONFIG.modules.meta.shieldCell,
+    tierValues: SHIELD_CHARGE_BONUSES
   }
 };
+
+/** Extra reflect-shell charges granted by the Reflect Capacitor at `level` (0 = none). */
+export const getShieldChargeBonus = (level: number): number =>
+  level > 0 ? SHIELD_CHARGE_BONUSES[Math.min(level, MODULE_MAX_TIER) - 1] ?? 0 : 0;
 
 // ---------------------------------------------------------------------------
 // Ship models
@@ -371,11 +390,37 @@ export const SHIPS_CONFIG: Record<ShipModelId, ShipStats> = Object.fromEntries(
         ...raw,
         // Normalise the opt-in specials so consumers never deal with undefined.
         shieldCharges: raw.shieldCharges ?? SHIP_DEFAULTS.shieldCharges,
+        shieldChargeMultiplier:
+          raw.shieldChargeMultiplier ?? SHIP_DEFAULTS.shieldChargeMultiplier,
         trueVision: raw.trueVision ?? SHIP_DEFAULTS.trueVision
       }
     ];
   })
 ) as Record<ShipModelId, ShipStats>;
+
+/** Canonical hull order, shared by every fleet carousel. Comes from the YAML. */
+export const SHIP_IDS = Object.keys(SHIPS_CONFIG) as ShipModelId[];
+
+/** Hull every pilot owns from the start; also the fallback for bad save data. */
+export const DEFAULT_SHIP_ID: ShipModelId = 'dart';
+
+/** Guards untrusted values (localStorage, URL params) before they reach state. */
+export const isShipModelId = (value: unknown): value is ShipModelId =>
+  typeof value === 'string' && Object.prototype.hasOwnProperty.call(SHIPS_CONFIG, value);
+
+/**
+ * Shield charges a hull actually fields.
+ *
+ * The hull's flat rating and any module bonus are summed first, then the hull's
+ * percentage multiplier is applied and rounded up. Ordering matters: the Titan
+ * Dreadnought's +50% is meant to scale with upgrades, so a bonus charge takes it
+ * from 2 (ceil 1 * 1.5) to 3 (ceil 2 * 1.5) rather than a flat 3.
+ */
+export function computeShieldCharges(shipId: ShipModelId, bonusCharges = 0): number {
+  const config = SHIPS_CONFIG[shipId] || SHIPS_CONFIG.dart;
+  const base = config.shieldCharges + Math.max(0, bonusCharges);
+  return Math.max(1, Math.ceil(base * config.shieldChargeMultiplier));
+}
 
 // ---------------------------------------------------------------------------
 // Difficulty settings (themeColorHex derived from themeColor)
@@ -383,9 +428,21 @@ export const SHIPS_CONFIG: Record<ShipModelId, ShipStats> = Object.fromEntries(
 export const DIFFICULTY_SETTINGS: Record<DifficultyKey, DifficultyConfig> = Object.fromEntries(
   (Object.keys(CONFIG.difficulties) as DifficultyKey[]).map((key) => {
     const d = CONFIG.difficulties[key];
-    return [key, { ...d, themeColorHex: hexToNumber(d.themeColor) }];
+    return [
+      key,
+      {
+        ...d,
+        themeColorHex: hexToNumber(d.themeColor),
+        // Normalised so consumers never have to handle undefined.
+        shieldChargeBonus: d.shieldChargeBonus ?? 0
+      }
+    ];
   })
 ) as Record<DifficultyKey, DifficultyConfig>;
+
+/** Extra reflect-shell charges a difficulty grants on top of the hull rating. */
+export const getDifficultyShieldChargeBonus = (difficulty: DifficultyKey): number =>
+  DIFFICULTY_SETTINGS[difficulty]?.shieldChargeBonus ?? 0;
 
 // ---------------------------------------------------------------------------
 // Ship color options (colorHex derived from color)

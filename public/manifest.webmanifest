@@ -1,0 +1,28 @@
+{
+  "name": "Neon Hover Spaceship - Asteroid Belt",
+  "short_name": "Hover Spaceship",
+  "description": "Arcade sector flight simulator: thread the asteroid belt, bank gems, upgrade your hull.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#030712",
+  "theme_color": "#3b0764",
+  "icons": [
+    {
+      "src": "/favicon-32.png",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

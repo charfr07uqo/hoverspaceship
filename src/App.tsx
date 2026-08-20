@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { DIFFICULTY_SETTINGS, SHIP_COLORS } from './constants/gameConfig';
+import { DEFAULT_SHIP_ID, DIFFICULTY_SETTINGS, SHIPS_CONFIG, SHIP_COLORS, SHIP_IDS, isShipModelId } from './constants/gameConfig';
 import { soundManager } from './audio/soundManager';
 import { GameCanvas } from './components/GameCanvas';
 import { HUD } from './components/HUD';
@@ -8,7 +8,12 @@ import { SplashScreen, SPLASH_EXIT_MS } from './components/SplashScreen';
 import { HangarScreen } from './components/HangarScreen';
 import { GameOverScreen } from './components/GameOverScreen';
 import { ShopScreen } from './components/ShopScreen';
-import { DifficultyKey, GameOverSummary, GameState, ModulePreview, ModuleStatus, ModuleType, ShipColorKey, ShipModelId } from './types/game';
+import {
+  OrientationGate,
+  releaseOrientationLock,
+  requestPortraitLock
+} from './components/OrientationGate';
+import { DifficultyKey, GameOverSummary, GameState, ModulePreview, ModuleStatus, ModuleType, PreviewModuleType, ShipColorKey, ShipModelId } from './types/game';
 import { GameEngine } from './game/GameEngine';
 import './styles/index.css';
 import './styles/ui.css';
@@ -59,8 +64,12 @@ export const App: React.FC = () => {
 
   const [currentDifficulty, setCurrentDifficulty] = useState<DifficultyKey>('normal');
   const [currentShipColor, setCurrentShipColor] = useState<ShipColorKey>('blue');
-  const [currentShipModel, setCurrentShipModel] = useState<ShipModelId>('dart');
-  const [unlockedShips, setUnlockedShips] = useState<ShipModelId[]>(['dart']);
+  // The hull actually flown. Only ever set to a hull present in unlockedShips.
+  const [currentShipModel, setCurrentShipModel] = useState<ShipModelId>(DEFAULT_SHIP_ID);
+  // The hull being browsed in the hangar. Free to point at locked hulls so the
+  // fleet stays shoppable, and deliberately separate from what gets equipped.
+  const [hangarShipModel, setHangarShipModel] = useState<ShipModelId>(DEFAULT_SHIP_ID);
+  const [unlockedShips, setUnlockedShips] = useState<ShipModelId[]>([DEFAULT_SHIP_ID]);
   const [totalGems, setTotalGems] = useState<number>(0);
   const [modulePreview, setModulePreview] = useState<ModulePreview>(NO_MODULE_PREVIEW);
 
@@ -75,16 +84,21 @@ export const App: React.FC = () => {
   const [threatsRemaining, setThreatsRemaining] = useState<number>(0);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [menuPaused, setMenuPaused] = useState<boolean>(false);
+  // True while the device is held sideways and the portrait gate is covering the
+  // game. Stable setter identity keeps OrientationGate's effect from re-running.
+  const [isSideways, setIsSideways] = useState<boolean>(false);
 
   // In-run ship modules (not persisted between games)
   const [isShopOpen, setIsShopOpen] = useState<boolean>(false);
   const [powerGenLevel, setPowerGenLevel] = useState<number>(0);
   const [zoomScannerLevel, setZoomScannerLevel] = useState<number>(0);
   const [autoCannonLevel, setAutoCannonLevel] = useState<number>(0);
+  const [shieldCellLevel, setShieldCellLevel] = useState<number>(0);
   const [moduleStatus, setModuleStatus] = useState<ModuleStatus>({
     powerGenLevel: 0,
     autoCannonLevel: 0,
     zoomScannerLevel: 0,
+    shieldCellLevel: 0,
     shieldActive: true,
     shieldRegenProgress: 1,
     cannonProgress: 0,
@@ -120,21 +134,32 @@ export const App: React.FC = () => {
       setCurrentShipColor(savedColor);
     }
 
-    // Unlocked ships
+    // Unlocked ships. Saved data is untrusted: keep only real hull ids, always
+    // include the starter hull, and restore the canonical fleet order.
+    let unlocked: ShipModelId[] = [DEFAULT_SHIP_ID];
     try {
-      const savedUnlocked = JSON.parse(localStorage.getItem('hoverbird_unlocked_ships') || '["dart"]');
+      const savedUnlocked: unknown = JSON.parse(
+        localStorage.getItem('hoverbird_unlocked_ships') || '[]'
+      );
       if (Array.isArray(savedUnlocked)) {
-        setUnlockedShips(savedUnlocked);
+        unlocked = SHIP_IDS.filter(
+          (id) => id === DEFAULT_SHIP_ID || savedUnlocked.some((saved) => saved === id)
+        );
       }
     } catch {
-      setUnlockedShips(['dart']);
+      unlocked = [DEFAULT_SHIP_ID];
     }
+    setUnlockedShips(unlocked);
 
-    // Active ship model
-    const savedShip = localStorage.getItem('hoverbird_active_ship') as ShipModelId;
-    if (savedShip) {
-      setCurrentShipModel(savedShip);
-    }
+    // Active ship model. A hull that is unknown or no longer owned falls back to
+    // the starter hull rather than silently equipping something unpurchased.
+    const savedShip: unknown = localStorage.getItem('hoverbird_active_ship');
+    const activeShip =
+      isShipModelId(savedShip) && unlocked.includes(savedShip) ? savedShip : DEFAULT_SHIP_ID;
+    setCurrentShipModel(activeShip);
+    setHangarShipModel(activeShip);
+    localStorage.setItem('hoverbird_active_ship', activeShip);
+    localStorage.setItem('hoverbird_unlocked_ships', JSON.stringify(unlocked));
 
     // Hangar module-fitting toggles
     try {
@@ -183,7 +208,11 @@ export const App: React.FC = () => {
         if (targetElem.requestFullscreen) {
           await targetElem.requestFullscreen();
         }
+        // Browsers only honour an orientation lock while fullscreen, so this is
+        // the one moment portrait can actually be enforced rather than asked for.
+        await requestPortraitLock();
       } else {
+        releaseOrientationLock();
         if (document.exitFullscreen) {
           await document.exitFullscreen();
         }
@@ -205,6 +234,7 @@ export const App: React.FC = () => {
     setPowerGenLevel(0);
     setZoomScannerLevel(0);
     setAutoCannonLevel(0);
+    setShieldCellLevel(0);
     setGameState('PLAYING');
     if (engineRef.current) {
       engineRef.current.setTotalGems(totalGems);
@@ -251,7 +281,7 @@ export const App: React.FC = () => {
     localStorage.setItem('hoverbird_ship_color', colorKey);
   };
 
-  const handleToggleModulePreview = (type: ModuleType): void => {
+  const handleToggleModulePreview = (type: PreviewModuleType): void => {
     setModulePreview((prev) => {
       const next = { ...prev, [type]: !prev[type] };
       localStorage.setItem(MODULE_PREVIEW_KEY, JSON.stringify(next));
@@ -259,19 +289,42 @@ export const App: React.FC = () => {
     });
   };
 
+  /**
+   * Equips a hull. This is the only path that changes the flown ship, so the
+   * ownership check lives here rather than in the screens that call it.
+   */
   const handleSelectShipModel = (modelId: ShipModelId): void => {
+    if (!isShipModelId(modelId) || !unlockedShips.includes(modelId)) return;
     setCurrentShipModel(modelId);
+    setHangarShipModel(modelId);
     localStorage.setItem('hoverbird_active_ship', modelId);
   };
 
-  const handleUnlockShip = (modelId: ShipModelId, cost: number): void => {
+  /** Hangar browsing only: moves the showcase hull without equipping it. */
+  const handleBrowseShipModel = (modelId: ShipModelId): void => {
+    if (!isShipModelId(modelId)) return;
+    setHangarShipModel(modelId);
+  };
+
+  const handleOpenHangar = (): void => {
+    // Always open on the equipped hull so browsing starts from what you fly.
+    setHangarShipModel(currentShipModel);
+    setMenuMode('HANGAR');
+  };
+
+  const handleUnlockShip = (modelId: ShipModelId): void => {
+    if (!isShipModelId(modelId)) return;
+    // Price is read from config here, not taken from the caller, so the UI can
+    // never quote a cheaper hull than the one it unlocks.
+    const cost = SHIPS_CONFIG[modelId].cost;
     if (totalGems >= cost && !unlockedShips.includes(modelId)) {
       const newGems = totalGems - cost;
-      const newUnlocked = [...unlockedShips, modelId];
+      const newUnlocked = SHIP_IDS.filter((id) => id === modelId || unlockedShips.includes(id));
 
       setTotalGems(newGems);
       setUnlockedShips(newUnlocked);
       setCurrentShipModel(modelId);
+      setHangarShipModel(modelId);
 
       localStorage.setItem('hoverbird_total_gems', newGems.toString());
       localStorage.setItem('hoverbird_unlocked_ships', JSON.stringify(newUnlocked));
@@ -316,6 +369,7 @@ export const App: React.FC = () => {
       setPowerGenLevel(engineRef.current.powerGenLevel);
       setAutoCannonLevel(engineRef.current.autoCannonLevel);
       setZoomScannerLevel(engineRef.current.zoomScannerLevel);
+      setShieldCellLevel(engineRef.current.shieldCellLevel);
       // purchaseModule already fired onGemsUpdate to sync the gem bank
     }
   };
@@ -327,13 +381,16 @@ export const App: React.FC = () => {
     }
   }, [gameState, isShopOpen]);
 
-  // Single source of truth for pausing the simulation: pause whenever the
-  // shop or the in-game menu is open. This avoids competing setPaused calls.
+  // Single source of truth for pausing the simulation: pause whenever the shop
+  // or the in-game menu is open, or the portrait gate is up. This avoids
+  // competing setPaused calls.
   useEffect(() => {
     if (engineRef.current) {
-      engineRef.current.setPaused(isShopOpen || menuPaused);
+      engineRef.current.setPaused(isShopOpen || menuPaused || isSideways);
     }
-  }, [isShopOpen, menuPaused]);
+  }, [isShopOpen, menuPaused, isSideways]);
+
+  const isHangarView = gameState === 'START' && menuMode === 'HANGAR';
 
   return (
     <div className={`game-wrapper ${isFullscreen ? 'is-fullscreen' : ''}`} ref={wrapperRef}>
@@ -342,11 +399,13 @@ export const App: React.FC = () => {
           engineRef={engineRef}
           currentDifficulty={currentDifficulty}
           currentShipColor={currentShipColor}
-          currentShipModel={currentShipModel}
+          // In the hangar the showcase follows the browsed hull; everywhere else
+          // it must be the equipped one.
+          currentShipModel={isHangarView ? hangarShipModel : currentShipModel}
           totalGems={totalGems}
           zoomScannerLevel={zoomScannerLevel}
           modulePreview={modulePreview}
-          isHangarMode={gameState === 'START' && menuMode === 'HANGAR'}
+          isHangarMode={isHangarView}
           isWarping={gameState === 'WARPING'}
           onScoreUpdate={setScore}
           onGemsUpdate={handleGemsUpdate}
@@ -382,7 +441,7 @@ export const App: React.FC = () => {
           isVisible={gameState === 'START' && menuMode === 'HOME'}
           isIntroAnimating={menuIntro}
           onStart={handleStartGame}
-          onOpenHangar={() => setMenuMode('HANGAR')}
+          onOpenHangar={handleOpenHangar}
           currentDifficulty={currentDifficulty}
           onSelectDifficulty={handleSelectDifficulty}
           currentShipModel={currentShipModel}
@@ -396,13 +455,15 @@ export const App: React.FC = () => {
 
         {/* Dedicated Hangar / Ship Configuration Screen */}
         <HangarScreen
-          isVisible={gameState === 'START' && menuMode === 'HANGAR'}
-          currentShipModel={currentShipModel}
+          isVisible={isHangarView}
+          browsedShipModel={hangarShipModel}
+          equippedShipModel={currentShipModel}
           unlockedShips={unlockedShips}
           totalGems={totalGems}
           currentShipColor={currentShipColor}
           modulePreview={modulePreview}
-          onSelectShipModel={handleSelectShipModel}
+          onBrowseShipModel={handleBrowseShipModel}
+          onEquipShipModel={handleSelectShipModel}
           onUnlockShip={handleUnlockShip}
           onSelectShipColor={handleSelectShipColor}
           onToggleModulePreview={handleToggleModulePreview}
@@ -437,6 +498,7 @@ export const App: React.FC = () => {
           powerGenLevel={powerGenLevel}
           autoCannonLevel={autoCannonLevel}
           zoomScannerLevel={zoomScannerLevel}
+          shieldCellLevel={shieldCellLevel}
           onPurchase={handlePurchaseModule}
           onClose={handleCloseShop}
         />
@@ -447,6 +509,10 @@ export const App: React.FC = () => {
           onFinish={handleSplashFinish}
         />
       </div>
+
+      {/* Portrait-only gate. Sits outside the 9:16 frame so it can cover the
+          whole screen, including the letterboxing, while sideways. */}
+      <OrientationGate onBlockedChange={setIsSideways} />
     </div>
   );
 };

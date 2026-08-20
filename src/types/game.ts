@@ -21,11 +21,17 @@ export interface ShipStats {
   speedStars: number; // 1-5 stars (faster speed = more stars)
   reactivityStars: number; // 1-5 stars (faster reactivity = more stars)
   /**
-   * Hits the reflect shell can absorb before it breaks. Baseline is 1; the
-   * Titan Dreadnought ships with 2. Kept as a first-class stat so a future
-   * module can stack extra charges on top of the hull's rating.
+   * Base hits the reflect shell can absorb before it breaks. Baseline is 1.
+   * Kept as a first-class stat so a future module can stack extra charges on
+   * top of the hull's rating.
    */
   shieldCharges: number;
+  /**
+   * Multiplier applied to `shieldCharges + module bonus`, rounded up. 1.0 for
+   * every hull except the Titan Dreadnought, whose 1.5 reads as "+50% shields"
+   * and keeps scaling as modules add charges (1 -> 2, 2 -> 3, 3 -> 5).
+   */
+  shieldChargeMultiplier: number;
   /**
    * True Sight: disguised bombs never cycle back into their gem form. Owned by
    * the Pulse Oracle today, and designed to also be grantable by a module.
@@ -53,6 +59,17 @@ export interface DifficultyConfig {
   themeColor: string;
   themeColorHex: number;
   themeGlow: string;
+  /**
+   * One-line summary of what this difficulty changes, phrased relative to NORMAL
+   * (the baseline). Shown under the difficulty picker and in the simulator.
+   */
+  blurb: string;
+  /**
+   * Extra reflect-shell charges granted purely for playing on this difficulty.
+   * Added to the hull rating alongside any module bonus, before the hull's
+   * shieldChargeMultiplier. 0 for every difficulty except EASY.
+   */
+  shieldChargeBonus: number;
 }
 
 export interface LevelSimulation {
@@ -85,18 +102,26 @@ export interface FloatingTextItem {
   color: string;
 }
 
-export type ModuleType = 'powerGen' | 'autoCannon' | 'zoomScanner';
+export type ModuleType = 'powerGen' | 'autoCannon' | 'zoomScanner' | 'shieldCell';
+
+/**
+ * Modules that bolt visible hardware onto the hull, and so can be shown off in
+ * the hangar. The Reflect Capacitor is excluded: it expresses itself through the
+ * reflect shell, which the hangar showcase never raises.
+ */
+export type PreviewModuleType = 'powerGen' | 'autoCannon' | 'zoomScanner';
 
 /**
  * Hangar-only "try before you buy" flags. Each enabled module is shown on the
  * showcase hull at max tier; nothing here affects an actual run.
  */
-export type ModulePreview = Record<ModuleType, boolean>;
+export type ModulePreview = Record<PreviewModuleType, boolean>;
 
 export interface ModuleStatus {
   powerGenLevel: number; // 0 = not owned, 1-5 tiers
   autoCannonLevel: number; // 0 = not owned, 1-5 tiers
   zoomScannerLevel: number; // 0 = not owned, 1-5 tiers
+  shieldCellLevel: number; // 0 = not owned, 1-5 tiers (extra reflect charges)
   shieldActive: boolean;
   shieldRegenProgress: number; // 0-1 toward regenerating the shield
   cannonProgress: number; // 0-1 toward the next auto cannon shot

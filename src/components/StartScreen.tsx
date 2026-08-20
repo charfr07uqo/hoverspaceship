@@ -2,10 +2,8 @@ import React, { useState } from 'react';
 import { DifficultySelector } from './DifficultySelector';
 import { LevelSimulator } from './LevelSimulator';
 import { DifficultyKey, ShipColorKey, ShipModelId } from '../types/game';
-import { SHIPS_CONFIG, SHIP_COLORS } from '../constants/gameConfig';
+import { SHIPS_CONFIG, SHIP_COLORS, SHIP_IDS } from '../constants/gameConfig';
 import { soundManager } from '../audio/soundManager';
-
-const SHIP_IDS: ShipModelId[] = ['dart', 'viper', 'titan', 'phantom', 'valkyrie'];
 
 const renderStars = (stars: number) => {
   const filled = Math.max(1, Math.min(5, stars));
@@ -69,6 +67,8 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   const handlePrevShip = () => {
     if (availableShips.length < 2) return;
     const idx = availableShips.indexOf(currentShipModel);
+    // idx of -1 means the active hull is not owned; snap back into the list.
+    if (idx < 0) return handleSelectShip(availableShips[0]);
     const prevIdx = (idx - 1 + availableShips.length) % availableShips.length;
     handleSelectShip(availableShips[prevIdx]);
   };
@@ -76,6 +76,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({
   const handleNextShip = () => {
     if (availableShips.length < 2) return;
     const idx = availableShips.indexOf(currentShipModel);
+    if (idx < 0) return handleSelectShip(availableShips[0]);
     const nextIdx = (idx + 1) % availableShips.length;
     handleSelectShip(availableShips[nextIdx]);
   };

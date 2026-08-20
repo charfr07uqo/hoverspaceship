@@ -1,40 +1,47 @@
 import React from 'react';
 import { ShipSelector } from './ShipSelector';
 import { ShipColorPicker } from './ShipColorPicker';
-import { ModulePreview, ModuleType, ShipColorKey, ShipModelId } from '../types/game';
+import { ModulePreview, PreviewModuleType, ShipColorKey, ShipModelId } from '../types/game';
 import { MODULE_META, SHIPS_CONFIG, SHIP_COLORS } from '../constants/gameConfig';
 
 /** Order the module preview toggles appear in, matching the shop layout. */
-const PREVIEW_MODULES: ModuleType[] = ['powerGen', 'autoCannon', 'zoomScanner'];
+const PREVIEW_MODULES: PreviewModuleType[] = ['powerGen', 'autoCannon', 'zoomScanner'];
 
 interface HangarScreenProps {
   isVisible: boolean;
-  currentShipModel: ShipModelId;
+  /** Hull on the showcase stage. May be locked — browsing is how you shop. */
+  browsedShipModel: ShipModelId;
+  /** Hull actually flown. Always one the player owns. */
+  equippedShipModel: ShipModelId;
   unlockedShips: ShipModelId[];
   totalGems: number;
   currentShipColor: ShipColorKey;
   modulePreview: ModulePreview;
-  onSelectShipModel: (modelId: ShipModelId) => void;
-  onUnlockShip: (modelId: ShipModelId, cost: number) => void;
+  onBrowseShipModel: (modelId: ShipModelId) => void;
+  onEquipShipModel: (modelId: ShipModelId) => void;
+  onUnlockShip: (modelId: ShipModelId) => void;
   onSelectShipColor: (colorKey: ShipColorKey) => void;
-  onToggleModulePreview: (type: ModuleType) => void;
+  onToggleModulePreview: (type: PreviewModuleType) => void;
   onBackToMenu: () => void;
 }
 
 export const HangarScreen: React.FC<HangarScreenProps> = ({
   isVisible,
-  currentShipModel,
+  browsedShipModel,
+  equippedShipModel,
   unlockedShips,
   totalGems,
   currentShipColor,
   modulePreview,
-  onSelectShipModel,
+  onBrowseShipModel,
+  onEquipShipModel,
   onUnlockShip,
   onSelectShipColor,
   onToggleModulePreview,
   onBackToMenu
 }) => {
-  const activeShip = SHIPS_CONFIG[currentShipModel];
+  // Every readout on this screen describes the hull you are looking at.
+  const activeShip = SHIPS_CONFIG[browsedShipModel];
   const activeColor = SHIP_COLORS[currentShipColor];
 
   return (
@@ -67,10 +74,12 @@ export const HangarScreen: React.FC<HangarScreenProps> = ({
 
       {/* Ship Selection with Quick Tabs & Stats & Unlocking */}
       <ShipSelector
-        currentShipModel={currentShipModel}
+        browsedShipModel={browsedShipModel}
+        equippedShipModel={equippedShipModel}
         unlockedShips={unlockedShips}
         totalGems={totalGems}
-        onSelectShip={onSelectShipModel}
+        onBrowseShip={onBrowseShipModel}
+        onEquipShip={onEquipShipModel}
         onUnlockShip={onUnlockShip}
       />
 

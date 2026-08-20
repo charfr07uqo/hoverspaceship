@@ -564,11 +564,16 @@
 }
 
 /* 3D Ship Showcase Viewport Stage - 100% Unobstructed Clean View */
+/* Stage heights are grown in step with PlayerShip's SHOWCASE_ZOOM (1.5x) so the
+   50%-larger hull still sits inside its frame. GameEngine's stage-height
+   reference (SHOWCASE_STAGE_REFERENCE_PX) is scaled by the same factor, so the
+   measured fit factor stays what it always was. Changing one means changing all
+   three. Kept in fixed px because the fit factor is derived from this height. */
 .ship-showcase-viewport {
   position: relative;
   width: 100%;
   max-width: 440px;
-  height: 220px;
+  height: 330px;
   display: block;
   margin-bottom: 8px;
   background: transparent;
@@ -578,7 +583,7 @@
 }
 
 .ship-showcase-viewport.hangar-viewport {
-  height: 195px;
+  height: 292px;
   margin-bottom: 4px;
 }
 
@@ -1229,6 +1234,63 @@
   font-weight: 800;
 }
 
+/* Marks a difficulty that hands out bonus reflect charges, so the perk is
+   discoverable without selecting the tab first. */
+.diff-perk-dot {
+  margin-left: 3px;
+  font-size: 0.6rem;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+
+/* Summary of what the selected difficulty changes, sitting directly under the
+   picker. Tinted with the live theme colour so it reads as part of the choice. */
+.diff-info-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  max-width: 440px;
+  margin-top: -4px;
+  margin-bottom: 8px;
+  box-sizing: border-box;
+  animation: diff-info-in 0.28s ease both;
+}
+
+.diff-blurb {
+  text-align: center;
+  font-size: 0.66rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  padding: 0 8px;
+}
+
+/* Spells out the selected difficulty's shield handout. Only rendered when the
+   difficulty actually grants charges, so it never reads as an empty slot. */
+.diff-perk-note {
+  padding: 3px 10px;
+  border-radius: 10px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  color: #86efac;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.7px;
+  white-space: nowrap;
+}
+
+@keyframes diff-info-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .diff-info-panel {
+    animation: none;
+  }
+}
+
 /* Action Buttons */
 .btn-group {
   display: flex;
@@ -1457,8 +1519,21 @@
 .sim-diff-toggle {
   display: flex;
   gap: 6px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
+}
+
+/* What the previewed difficulty changes, in prose, above the per-sector table. */
+.sim-diff-blurb {
+  font-size: 0.68rem;
+  line-height: 1.45;
+  color: #94a3b8;
+  margin-bottom: 10px;
+}
+
+.sim-diff-perk {
+  color: #86efac;
+  font-weight: 700;
 }
 
 .sim-diff-btn {
@@ -1669,6 +1744,14 @@
   min-width: 16px;
 }
 
+/* Difficulty-granted charges, tinted apart from the amber module tier labels so
+   the two sources of extra pips are not confused for one another. */
+.module-hud-lvl.diff-bonus-tag {
+  color: var(--theme-color, #22c55e);
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
 /* Reinforced shield charge pips (one per charge the hull/loadout grants) */
 .module-hud-pips {
   display: flex;
@@ -1755,97 +1838,112 @@
   animation: fadeIn 0.2s ease-out;
 }
 
+/* Compact panel: four module tiles in a 2x2 grid so the whole shop fits the
+   warp window without scrolling. Scrolling is still allowed as a fallback on
+   very short viewports. */
 .shop-card-container {
   width: 100%;
-  max-width: 460px;
+  max-width: 480px;
+  max-height: 100%;
+  overflow-y: auto;
   background: rgba(15, 23, 42, 0.96);
   border: 1px solid var(--theme-color, #38bdf8);
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: 0 0 30px var(--theme-glow, rgba(56, 189, 248, 0.4));
-  padding: 20px;
+  padding: 14px;
 }
 
 .shop-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
+  gap: 10px;
 }
 
 .shop-title {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 900;
   color: #ffffff;
   margin: 0;
 }
 
 .shop-subtitle {
-  font-size: 11px;
+  font-size: 10px;
   color: #94a3b8;
-  margin: 4px 0 0;
+  margin: 3px 0 0;
 }
 
 .shop-gem-bank {
   font-family: var(--font-mono);
+  font-size: 13px;
   font-weight: 800;
   color: #fbbf24;
   background: rgba(251, 191, 36, 0.12);
   border: 1px solid rgba(251, 191, 36, 0.4);
-  border-radius: 8px;
-  padding: 6px 10px;
+  border-radius: 7px;
+  padding: 4px 8px;
   white-space: nowrap;
 }
 
 .shop-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
 }
 
 .shop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 12px;
-  padding: 14px;
+  border-radius: 10px;
+  padding: 9px;
 }
 
 .shop-card-head {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-bottom: 10px;
+  align-items: center;
+  gap: 6px;
 }
 
 .shop-card-icon {
-  font-size: 24px;
+  font-size: 16px;
   line-height: 1;
 }
 
 .shop-card-name {
-  font-size: 15px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
   font-weight: 800;
   color: #f8fafc;
   margin: 0;
+  line-height: 1.2;
 }
 
-.shop-card-blurb {
-  font-size: 11px;
-  color: #94a3b8;
-  margin: 2px 0 0;
+/* Tier readout collapses into the header to save a whole row. */
+.shop-card-tier {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  color: #cbd5e1;
+  white-space: nowrap;
 }
 
 .shop-tier-row {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-bottom: 10px;
+  gap: 3px;
 }
 
+/* Pips share the tile width instead of using a fixed size, so the panel can
+   shrink without the tier bar dictating a minimum. */
 .shop-tier-pip {
-  width: 22px;
-  height: 6px;
+  flex: 1;
+  min-width: 0;
+  height: 5px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.14);
 }
@@ -1855,33 +1953,37 @@
   box-shadow: 0 0 6px var(--theme-glow, rgba(56, 189, 248, 0.6));
 }
 
-.shop-tier-label {
-  margin-left: 6px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-weight: 800;
-  color: #cbd5e1;
-}
-
+/* Current -> next on one line; the module blurb moved to the tile's tooltip. */
 .shop-card-stats {
   display: flex;
-  justify-content: space-between;
-  font-size: 12px;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: #cbd5e1;
-  margin-bottom: 12px;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.shop-card-stats b {
+.shop-stat-now {
   color: #ffffff;
+  font-weight: 700;
 }
 
-.shop-card-next b {
+.shop-stat-arrow {
+  color: #64748b;
+}
+
+.shop-stat-next {
   color: #4ade80;
+  font-weight: 700;
 }
 
 .shop-buy-btn {
   width: 100%;
-  padding: 9px 12px;
+  margin-top: auto;
+  padding: 6px 8px;
+  font-size: 11px;
   background: linear-gradient(135deg, #f59e0b, #d97706);
   color: #ffffff;
 }
@@ -1893,7 +1995,15 @@
 
 .shop-close-btn {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+/* Single column when the panel gets too narrow for two tiles. */
+@media (max-width: 420px) {
+  .shop-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* ==========================================================================

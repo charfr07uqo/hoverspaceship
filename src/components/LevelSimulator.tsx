@@ -1,6 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { DifficultyKey } from '../types/game';
-import { DIFFICULTY_SETTINGS, simulateLevel } from '../constants/gameConfig';
+import {
+  DIFFICULTY_SETTINGS,
+  getDifficultyShieldChargeBonus,
+  simulateLevel
+} from '../constants/gameConfig';
 
 interface LevelSimulatorProps {
   isVisible: boolean;
@@ -33,6 +37,8 @@ export const LevelSimulator: React.FC<LevelSimulatorProps> = ({ isVisible, curre
   if (!isVisible) return null;
 
   const diffKeys = Object.keys(DIFFICULTY_SETTINGS) as DifficultyKey[];
+  const previewConfig = DIFFICULTY_SETTINGS[previewDiff] || DIFFICULTY_SETTINGS.normal;
+  const previewShieldBonus = getDifficultyShieldChargeBonus(previewDiff);
 
   return (
     <div className="overlay sim-overlay" onClick={onClose}>
@@ -78,12 +84,25 @@ export const LevelSimulator: React.FC<LevelSimulatorProps> = ({ isVisible, curre
                 className={`sim-diff-btn ${active ? 'active' : ''}`}
                 style={active ? { borderColor: cfg.themeColor, color: cfg.themeColor, boxShadow: `0 0 10px ${cfg.themeGlow}` } : undefined}
                 onClick={() => setPreviewDiff(key)}
+                title={cfg.blurb}
               >
                 {cfg.label}
               </button>
             );
           })}
         </div>
+
+        {/* Plain-language summary of the previewed difficulty. The table below
+            covers per-sector numbers; this covers what the difficulty itself
+            changes, which is otherwise only visible by comparing columns. */}
+        <p className="sim-diff-blurb">
+          {previewConfig.blurb}
+          {previewShieldBonus > 0 && (
+            <span className="sim-diff-perk">
+              {' '}🛡️ +{previewShieldBonus} shield charge{previewShieldBonus === 1 ? '' : 's'}.
+            </span>
+          )}
+        </p>
 
         <div className="sim-table-scroll">
           <table className="sim-table">
