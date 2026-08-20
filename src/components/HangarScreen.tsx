@@ -1,8 +1,11 @@
 import React from 'react';
 import { ShipSelector } from './ShipSelector';
 import { ShipColorPicker } from './ShipColorPicker';
-import { ShipColorKey, ShipModelId } from '../types/game';
-import { SHIPS_CONFIG, SHIP_COLORS } from '../constants/gameConfig';
+import { ModulePreview, ModuleType, ShipColorKey, ShipModelId } from '../types/game';
+import { MODULE_META, SHIPS_CONFIG, SHIP_COLORS } from '../constants/gameConfig';
+
+/** Order the module preview toggles appear in, matching the shop layout. */
+const PREVIEW_MODULES: ModuleType[] = ['powerGen', 'autoCannon', 'zoomScanner'];
 
 interface HangarScreenProps {
   isVisible: boolean;
@@ -10,9 +13,11 @@ interface HangarScreenProps {
   unlockedShips: ShipModelId[];
   totalGems: number;
   currentShipColor: ShipColorKey;
+  modulePreview: ModulePreview;
   onSelectShipModel: (modelId: ShipModelId) => void;
   onUnlockShip: (modelId: ShipModelId, cost: number) => void;
   onSelectShipColor: (colorKey: ShipColorKey) => void;
+  onToggleModulePreview: (type: ModuleType) => void;
   onBackToMenu: () => void;
 }
 
@@ -22,9 +27,11 @@ export const HangarScreen: React.FC<HangarScreenProps> = ({
   unlockedShips,
   totalGems,
   currentShipColor,
+  modulePreview,
   onSelectShipModel,
   onUnlockShip,
   onSelectShipColor,
+  onToggleModulePreview,
   onBackToMenu
 }) => {
   const activeShip = SHIPS_CONFIG[currentShipModel];
@@ -72,6 +79,36 @@ export const HangarScreen: React.FC<HangarScreenProps> = ({
         currentShipColor={currentShipColor}
         onSelectShipColor={onSelectShipColor}
       />
+
+      {/* Module fitting preview: mounts the shop hardware on the showcase hull */}
+      <div className="module-preview-panel">
+        <div className="module-preview-head">
+          <span className="module-preview-title">MODULE FITTING</span>
+          <span className="module-preview-hint">Preview only · buy in-run at the warp shop</span>
+        </div>
+        <div className="module-preview-row">
+          {PREVIEW_MODULES.map((type) => {
+            const meta = MODULE_META[type];
+            const on = modulePreview[type];
+            return (
+              <button
+                key={type}
+                type="button"
+                className={`module-toggle module-toggle-${type} ${on ? 'is-on' : ''}`}
+                onClick={() => onToggleModulePreview(type)}
+                aria-pressed={on}
+                title={meta.blurb}
+              >
+                <span className="module-toggle-icon">{meta.icon}</span>
+                <span className="module-toggle-name">{meta.name}</span>
+                <span className="module-toggle-switch" aria-hidden="true">
+                  <span className="module-toggle-knob" />
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <button className="btn btn-secondary hangar-back-btn" onClick={onBackToMenu} type="button">
         ◀ RETURN TO TITLE

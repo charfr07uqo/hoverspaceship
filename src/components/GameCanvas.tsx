@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GameEngine } from '../game/GameEngine';
 import { MODULE_MAX_TIER } from '../constants/gameConfig';
-import { DifficultyKey, FloatingTextItem, GameOverSummary, GameState, ModuleStatus, ShipColorKey, ShipModelId } from '../types/game';
+import { DifficultyKey, FloatingTextItem, GameOverSummary, GameState, ModulePreview, ModuleStatus, ShipColorKey, ShipModelId } from '../types/game';
 
 // Width (as a fraction of the screen) that the right-side fog of war covers when
 // the Scanner Array module is not installed. Each tier peels this back until the
@@ -15,6 +15,8 @@ interface GameCanvasProps {
   currentShipModel: ShipModelId;
   totalGems: number;
   zoomScannerLevel?: number;
+  /** Hangar-only module fitting preview; ignored outside hangar mode. */
+  modulePreview?: ModulePreview;
   isHangarMode?: boolean;
   /** Hides the fog of war while the spacewarp animation plays. */
   isWarping?: boolean;
@@ -35,6 +37,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   currentShipModel,
   totalGems,
   zoomScannerLevel = 0,
+  modulePreview,
   isHangarMode = false,
   isWarping = false,
   onScoreUpdate,
@@ -154,6 +157,17 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       engineRef.current.setHangarMode(isHangarMode);
     }
   }, [isHangarMode]);
+
+  // Module fitting preview. Each enabled module is shown at max tier so the
+  // hangar displays the fully built hardware rather than a tier-1 stub.
+  const previewPowerGen = modulePreview?.powerGen ? MODULE_MAX_TIER : 0;
+  const previewAutoCannon = modulePreview?.autoCannon ? MODULE_MAX_TIER : 0;
+  const previewZoomScanner = modulePreview?.zoomScanner ? MODULE_MAX_TIER : 0;
+  useEffect(() => {
+    if (engineRef.current) {
+      engineRef.current.setModulePreview(previewPowerGen, previewAutoCannon, previewZoomScanner);
+    }
+  }, [previewPowerGen, previewAutoCannon, previewZoomScanner]);
 
   const clampedTier = Math.max(0, Math.min(MODULE_MAX_TIER, zoomScannerLevel));
   const fogFraction = BASE_FOG_FRACTION * (1 - clampedTier / MODULE_MAX_TIER);

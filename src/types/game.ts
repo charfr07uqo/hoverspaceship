@@ -87,6 +87,12 @@ export interface FloatingTextItem {
 
 export type ModuleType = 'powerGen' | 'autoCannon' | 'zoomScanner';
 
+/**
+ * Hangar-only "try before you buy" flags. Each enabled module is shown on the
+ * showcase hull at max tier; nothing here affects an actual run.
+ */
+export type ModulePreview = Record<ModuleType, boolean>;
+
 export interface ModuleStatus {
   powerGenLevel: number; // 0 = not owned, 1-5 tiers
   autoCannonLevel: number; // 0 = not owned, 1-5 tiers

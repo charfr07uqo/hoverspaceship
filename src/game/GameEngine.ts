@@ -466,6 +466,9 @@ export class GameEngine {
     this.currentShipModel = modelId;
     if (this.player) {
       this.player.setShipModel(modelId);
+      // Module mount points are per-hull, so the attachments have to be rebuilt
+      // against the new airframe rather than left on the old hull's anchors.
+      this.applyModuleVisuals();
     }
     // Hull specials changed: re-evaluate True Sight on anything already in flight.
     this.syncTrueVision();
@@ -505,9 +508,18 @@ export class GameEngine {
     return `🛡️ SHIELD HELD! ${left} CHARGE${left === 1 ? '' : 'S'} LEFT`;
   }
 
+  /** @internal Tracks hangar mode so module visuals know which tiers to show. */
+  private isHangarMode = false;
+  private previewPowerGen = 0;
+  private previewAutoCannon = 0;
+  private previewZoomScanner = 0;
+
   public setHangarMode(isHangar: boolean): void {
+    this.isHangarMode = isHangar;
     if (this.player) {
       this.player.setHangarMode(isHangar);
+      // Swap between the preview kit and what the player actually owns.
+      this.applyModuleVisuals();
       // The hangar stage sits at a different height than the title stage, so
       // re-measure on the next frame (after React has committed the layout).
       this.showcaseAnchorTimer = 999;
@@ -521,7 +533,11 @@ export class GameEngine {
   /** Update the game state and notify listeners (drives React screen/shop visibility). */
   private setGameState(next: GameState): void {
     if (this.gameState === next) return;
+    const wasMenu = this.gameState === 'START';
     this.gameState = next;
+    // Entering or leaving the menu flips which module tiers the hull displays
+    // (hangar preview vs. what the player owns), so re-apply on that edge only.
+    if (wasMenu !== (next === 'START')) this.applyModuleVisuals();
     if (this.callbacks.onGameStateChange) this.callbacks.onGameStateChange(next);
   }
 
@@ -567,11 +583,41 @@ export class GameEngine {
     }
 
     // Reflect the new module tiers on the ship's visuals
-    this.player.setModuleLevels(this.powerGenLevel, this.autoCannonLevel);
+    this.applyModuleVisuals();
 
     soundManager.playGemSound();
     if (this.callbacks.onGemsUpdate) this.callbacks.onGemsUpdate(this.gemsCollected, this.totalGems);
     return true;
+  }
+
+  /**
+   * Hangar-only module preview tiers. Lets the player see the hardware bolted
+   * onto the hull without owning it; purely cosmetic and never used in flight.
+   */
+  public setModulePreview(powerGen: number, autoCannon: number, zoomScanner: number): void {
+    this.previewPowerGen = Math.max(0, powerGen);
+    this.previewAutoCannon = Math.max(0, autoCannon);
+    this.previewZoomScanner = Math.max(0, zoomScanner);
+    this.applyModuleVisuals();
+  }
+
+  /**
+   * Pushes the tiers the ship should *display*. In the hangar that is the
+   * preview selection, everywhere else it is what the player actually owns.
+   */
+  private applyModuleVisuals(): void {
+    if (!this.player) return;
+    // The gameState guard matters because startGame() runs before React can
+    // commit the hangar-mode prop change, and a preview kit must never survive
+    // into an actual run.
+    if (this.isHangarMode && this.gameState === 'START') {
+      this.player.setModuleLevels(this.previewPowerGen, this.previewAutoCannon, this.previewZoomScanner);
+      // Park the turret level and fully charged so the preview reads clearly.
+      this.player.aimCannon(0);
+      this.player.setCannonCharge(1);
+    } else {
+      this.player.setModuleLevels(this.powerGenLevel, this.autoCannonLevel, this.zoomScannerLevel);
+    }
   }
 
   // Live count of remaining threats this sector: enemies not yet spawned plus
@@ -671,7 +717,7 @@ export class GameEngine {
     this.shieldRegenTimer = 0;
     this.autoCannonTimer = 0;
     this.trueVisionModuleLevel = 0;
-    this.player.setModuleLevels(0, 0);
+    this.applyModuleVisuals();
     // Drop any module-granted shield charges back to the hull's own rating.
     this.player.setBonusShieldCharges(0);
     // Reset the viewport back to the default (un-widened) framing.
@@ -1162,8 +1208,10 @@ export class GameEngine {
               shipConfig.colorHex,
               shieldDown ? 40 : 22
             );
-            this.particleSystem.createExplosion(drone.x, drone.y, 0, 0xef4444, 30);
-            this.particleSystem.createDebris(drone.x, drone.y, 0, 0xff0055, 18);
+            // Wreckage takes the drone's own accent, so heavies burn orange and
+            // scouts burn violet instead of every kill reading the same red.
+            this.particleSystem.createExplosion(drone.x, drone.y, 0, drone.accentColorHex, 30);
+            this.particleSystem.createDebris(drone.x, drone.y, 0, drone.accentColorHex, 18);
 
             this.score += 3;
             this.enemiesSurvived++;
@@ -1219,10 +1267,18 @@ export class GameEngine {
       if (this.autoCannonLevel > 0) {
         const reload = AUTO_CANNON_RELOAD_SEC[this.autoCannonLevel - 1];
         this.autoCannonTimer += dt;
+
+        // Track the nearest threat every frame so the turret visibly leads it,
+        // and feed the reload progress to the heat glow on the charge band.
+        const tracked = this.findNearestEnemy();
+        this.player.aimCannon(
+          tracked ? Math.atan2(tracked.y - this.player.y, Math.max(1, tracked.x - this.player.x)) : 0
+        );
+        this.player.setCannonCharge(Math.min(1, this.autoCannonTimer / reload));
+
         if (this.autoCannonTimer >= reload) {
-          const target = this.findNearestEnemy();
-          if (target) {
-            this.fireProjectile(target);
+          if (tracked) {
+            this.fireProjectile(tracked);
             this.autoCannonTimer = 0;
           } else {
             // Stay fully charged until a target appears.
@@ -1244,8 +1300,8 @@ export class GameEngine {
           const combined = proj.radius + drone.radius;
           if (dx * dx + dy * dy < combined * combined) {
             // Vaporize the enemy interceptor
-            this.particleSystem.createExplosion(drone.x, drone.y, 0, 0xef4444, 30);
-            this.particleSystem.createDebris(drone.x, drone.y, 0, 0xff0055, 16);
+            this.particleSystem.createExplosion(drone.x, drone.y, 0, drone.accentColorHex, 30);
+            this.particleSystem.createDebris(drone.x, drone.y, 0, drone.accentColorHex, 16);
             drone.destroy();
             this.enemies.splice(j, 1);
             soundManager.playHitSound();

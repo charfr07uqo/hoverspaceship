@@ -8,7 +8,7 @@ import { SplashScreen, SPLASH_EXIT_MS } from './components/SplashScreen';
 import { HangarScreen } from './components/HangarScreen';
 import { GameOverScreen } from './components/GameOverScreen';
 import { ShopScreen } from './components/ShopScreen';
-import { DifficultyKey, GameOverSummary, GameState, ModuleStatus, ModuleType, ShipColorKey, ShipModelId } from './types/game';
+import { DifficultyKey, GameOverSummary, GameState, ModulePreview, ModuleStatus, ModuleType, ShipColorKey, ShipModelId } from './types/game';
 import { GameEngine } from './game/GameEngine';
 import './styles/index.css';
 import './styles/ui.css';
@@ -18,6 +18,10 @@ import './styles/ui.css';
  * staggered panel entrances that land after the backdrop has settled.
  */
 const MENU_INTRO_TAIL_MS = 500;
+
+/** Hangar module-fitting toggles, remembered between sessions. */
+const MODULE_PREVIEW_KEY = 'hoverbird_module_preview';
+const NO_MODULE_PREVIEW: ModulePreview = { powerGen: false, autoCannon: false, zoomScanner: false };
 
 export const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('START');
@@ -58,6 +62,7 @@ export const App: React.FC = () => {
   const [currentShipModel, setCurrentShipModel] = useState<ShipModelId>('dart');
   const [unlockedShips, setUnlockedShips] = useState<ShipModelId[]>(['dart']);
   const [totalGems, setTotalGems] = useState<number>(0);
+  const [modulePreview, setModulePreview] = useState<ModulePreview>(NO_MODULE_PREVIEW);
 
   const [score, setScore] = useState<number>(0);
   const [runGems, setRunGems] = useState<number>(0);
@@ -129,6 +134,20 @@ export const App: React.FC = () => {
     const savedShip = localStorage.getItem('hoverbird_active_ship') as ShipModelId;
     if (savedShip) {
       setCurrentShipModel(savedShip);
+    }
+
+    // Hangar module-fitting toggles
+    try {
+      const savedPreview = JSON.parse(localStorage.getItem(MODULE_PREVIEW_KEY) || 'null');
+      if (savedPreview && typeof savedPreview === 'object') {
+        setModulePreview({
+          powerGen: !!savedPreview.powerGen,
+          autoCannon: !!savedPreview.autoCannon,
+          zoomScanner: !!savedPreview.zoomScanner
+        });
+      }
+    } catch {
+      setModulePreview(NO_MODULE_PREVIEW);
     }
 
     // Fullscreen change listener
@@ -232,6 +251,14 @@ export const App: React.FC = () => {
     localStorage.setItem('hoverbird_ship_color', colorKey);
   };
 
+  const handleToggleModulePreview = (type: ModuleType): void => {
+    setModulePreview((prev) => {
+      const next = { ...prev, [type]: !prev[type] };
+      localStorage.setItem(MODULE_PREVIEW_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
   const handleSelectShipModel = (modelId: ShipModelId): void => {
     setCurrentShipModel(modelId);
     localStorage.setItem('hoverbird_active_ship', modelId);
@@ -318,6 +345,7 @@ export const App: React.FC = () => {
           currentShipModel={currentShipModel}
           totalGems={totalGems}
           zoomScannerLevel={zoomScannerLevel}
+          modulePreview={modulePreview}
           isHangarMode={gameState === 'START' && menuMode === 'HANGAR'}
           isWarping={gameState === 'WARPING'}
           onScoreUpdate={setScore}
@@ -373,9 +401,11 @@ export const App: React.FC = () => {
           unlockedShips={unlockedShips}
           totalGems={totalGems}
           currentShipColor={currentShipColor}
+          modulePreview={modulePreview}
           onSelectShipModel={handleSelectShipModel}
           onUnlockShip={handleUnlockShip}
           onSelectShipColor={handleSelectShipColor}
+          onToggleModulePreview={handleToggleModulePreview}
           onBackToMenu={() => setMenuMode('HOME')}
         />
 
