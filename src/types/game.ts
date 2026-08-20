@@ -1,4 +1,27 @@
-export type GameState = 'START' | 'PLAYING' | 'WARPING' | 'DYING' | 'GAMEOVER';
+export type GameState = 'START' | 'PLAYING' | 'WARPING' | 'RIFT_WARPING' | 'DYING' | 'GAMEOVER';
+
+/**
+ * Where the flight is in the bonus-rift cycle.
+ *   idle       - normal space, no rift involved
+ *   pending    - clearing a sector opened a rift; the ordinary sector warp is
+ *                still playing out and the rift is what waits on the far side
+ *   entering   - the reality-breach warp into the rift is running
+ *   running    - inside the rift: endless, double gems, ramping pressure
+ *   collapsing - the player was destroyed; the rift is folding back to normal space
+ */
+export type RiftPhase = 'idle' | 'pending' | 'entering' | 'running' | 'collapsing';
+
+export interface RiftStatus {
+  phase: RiftPhase;
+  /** Seconds survived inside the rift so far. */
+  elapsedSec: number;
+  /** Gems banked inside the rift so far (rift only, not the whole run). */
+  gems: number;
+  /** Enemy interceptors currently alive in the rift. */
+  hostiles: number;
+  /** Normal sector the flight resumes at once the rift collapses. */
+  resumeLevel: number;
+}
 
 export type DifficultyKey = 'easy' | 'normal' | 'hard' | 'exhard';
 
@@ -153,4 +176,5 @@ export interface GameEngineCallbacks {
   onModuleStatus?: (status: ModuleStatus) => void;
   onThreatCount?: (remaining: number) => void;
   onGameStateChange?: (state: GameState) => void;
+  onRiftStatus?: (status: RiftStatus) => void;
 }

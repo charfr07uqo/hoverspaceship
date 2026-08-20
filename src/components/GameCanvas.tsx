@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { GameEngine } from '../game/GameEngine';
 import { MODULE_MAX_TIER } from '../constants/gameConfig';
-import { DifficultyKey, FloatingTextItem, GameOverSummary, GameState, ModulePreview, ModuleStatus, ShipColorKey, ShipModelId } from '../types/game';
+import { DifficultyKey, FloatingTextItem, GameOverSummary, GameState, ModulePreview, ModuleStatus, RiftStatus, ShipColorKey, ShipModelId } from '../types/game';
 
 // Width (as a fraction of the screen) that the right-side fog of war covers when
 // the Scanner Array module is not installed. Each tier peels this back until the
@@ -18,8 +18,10 @@ interface GameCanvasProps {
   /** Hangar-only module fitting preview; ignored outside hangar mode. */
   modulePreview?: ModulePreview;
   isHangarMode?: boolean;
-  /** Hides the fog of war while the spacewarp animation plays. */
+  /** Hides the fog of war while a spacewarp or reality-breach animation plays. */
   isWarping?: boolean;
+  /** Tints the canvas frame while the flight is inside a bonus rift. */
+  isRiftSpace?: boolean;
   onScoreUpdate: (score: number) => void;
   onGemsUpdate: (runGems: number, totalGems: number) => void;
   onGameOver: (summary: GameOverSummary) => void;
@@ -28,6 +30,7 @@ interface GameCanvasProps {
   onModuleStatus: (status: ModuleStatus) => void;
   onThreatCount: (remaining: number) => void;
   onGameStateChange: (state: GameState) => void;
+  onRiftStatus: (status: RiftStatus) => void;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
@@ -40,6 +43,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   modulePreview,
   isHangarMode = false,
   isWarping = false,
+  isRiftSpace = false,
   onScoreUpdate,
   onGemsUpdate,
   onGameOver,
@@ -47,7 +51,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onLevelProgress,
   onModuleStatus,
   onThreatCount,
-  onGameStateChange
+  onGameStateChange,
+  onRiftStatus
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [floatingTexts, setFloatingTexts] = useState<FloatingTextItem[]>([]);
@@ -64,7 +69,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onLevelProgress,
     onModuleStatus,
     onThreatCount,
-    onGameStateChange
+    onGameStateChange,
+    onRiftStatus
   });
   callbacksRef.current = {
     onScoreUpdate,
@@ -74,7 +80,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     onLevelProgress,
     onModuleStatus,
     onThreatCount,
-    onGameStateChange
+    onGameStateChange,
+    onRiftStatus
   };
 
   useEffect(() => {
@@ -112,7 +119,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       onLevelProgress: (...args) => callbacksRef.current.onLevelProgress(...args),
       onModuleStatus: (...args) => callbacksRef.current.onModuleStatus(...args),
       onThreatCount: (...args) => callbacksRef.current.onThreatCount(...args),
-      onGameStateChange: (...args) => callbacksRef.current.onGameStateChange(...args)
+      onGameStateChange: (...args) => callbacksRef.current.onGameStateChange(...args),
+      onRiftStatus: (...args) => callbacksRef.current.onRiftStatus(...args)
     });
 
     engineRef.current = engine;
@@ -173,7 +181,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   const fogFraction = BASE_FOG_FRACTION * (1 - clampedTier / MODULE_MAX_TIER);
 
   return (
-    <div className="canvas-container" ref={containerRef}>
+    <div className={`canvas-container ${isRiftSpace ? 'is-rift-space' : ''}`} ref={containerRef}>
       {fogFraction > 0.001 && (
         <div
           className={`fog-of-war ${isWarping ? 'is-hidden' : ''}`}

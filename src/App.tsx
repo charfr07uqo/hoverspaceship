@@ -13,7 +13,7 @@ import {
   releaseOrientationLock,
   requestPortraitLock
 } from './components/OrientationGate';
-import { DifficultyKey, GameOverSummary, GameState, ModulePreview, ModuleStatus, ModuleType, PreviewModuleType, ShipColorKey, ShipModelId } from './types/game';
+import { DifficultyKey, GameOverSummary, GameState, ModulePreview, ModuleStatus, ModuleType, PreviewModuleType, RiftStatus, ShipColorKey, ShipModelId } from './types/game';
 import { GameEngine } from './game/GameEngine';
 import './styles/index.css';
 import './styles/ui.css';
@@ -27,6 +27,9 @@ const MENU_INTRO_TAIL_MS = 500;
 /** Hangar module-fitting toggles, remembered between sessions. */
 const MODULE_PREVIEW_KEY = 'hoverbird_module_preview';
 const NO_MODULE_PREVIEW: ModulePreview = { powerGen: false, autoCannon: false, zoomScanner: false };
+
+/** Normal space: no bonus rift anywhere in sight. */
+const NO_RIFT: RiftStatus = { phase: 'idle', elapsedSec: 0, gems: 0, hostiles: 0, resumeLevel: 1 };
 
 export const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('START');
@@ -82,6 +85,9 @@ export const App: React.FC = () => {
   const [runTimeSec, setRunTimeSec] = useState<number>(0);
   const [levelProgress, setLevelProgress] = useState<number>(0); // 0 to 1
   const [threatsRemaining, setThreatsRemaining] = useState<number>(0);
+  // Bonus rift state, mirrored from the engine so the HUD can announce the
+  // breach and swap the sector readout for the endless-rift one.
+  const [riftStatus, setRiftStatus] = useState<RiftStatus>(NO_RIFT);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [menuPaused, setMenuPaused] = useState<boolean>(false);
   // True while the device is held sideways and the portrait gate is covering the
@@ -230,6 +236,7 @@ export const App: React.FC = () => {
     setEnemiesSurvived(0);
     setRunTimeSec(0);
     setLevelProgress(0);
+    setRiftStatus(NO_RIFT);
     setIsShopOpen(false);
     setPowerGenLevel(0);
     setZoomScannerLevel(0);
@@ -248,6 +255,8 @@ export const App: React.FC = () => {
     setLevel(summary.level);
     setEnemiesSurvived(summary.enemiesSurvived);
     setRunTimeSec(summary.runTimeSec);
+    // A rift never reaches game over, so arriving here always means normal space.
+    setRiftStatus(NO_RIFT);
 
     const storageKey = getHighScoreKey(currentDifficulty);
     const savedHighScore = parseInt(localStorage.getItem(storageKey) || '0', 10) || 0;
@@ -267,6 +276,7 @@ export const App: React.FC = () => {
   const handleGoToTitle = (): void => {
     setGameState('START');
     setMenuMode('HOME');
+    setRiftStatus(NO_RIFT);
     if (engineRef.current) {
       engineRef.current.goToTitleScreen();
     }
@@ -406,7 +416,8 @@ export const App: React.FC = () => {
           zoomScannerLevel={zoomScannerLevel}
           modulePreview={modulePreview}
           isHangarMode={isHangarView}
-          isWarping={gameState === 'WARPING'}
+          isWarping={gameState === 'WARPING' || gameState === 'RIFT_WARPING'}
+          isRiftSpace={riftStatus.phase === 'entering' || riftStatus.phase === 'running' || riftStatus.phase === 'collapsing'}
           onScoreUpdate={setScore}
           onGemsUpdate={handleGemsUpdate}
           onGameOver={handleGameOver}
@@ -415,6 +426,7 @@ export const App: React.FC = () => {
           onModuleStatus={handleModuleStatus}
           onThreatCount={setThreatsRemaining}
           onGameStateChange={setGameState}
+          onRiftStatus={setRiftStatus}
         />
 
         <HUD
@@ -425,6 +437,7 @@ export const App: React.FC = () => {
           level={level}
           levelProgress={levelProgress}
           threatsRemaining={threatsRemaining}
+          riftStatus={riftStatus}
           currentDifficulty={currentDifficulty}
           currentShipModel={currentShipModel}
           moduleStatus={moduleStatus}

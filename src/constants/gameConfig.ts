@@ -101,6 +101,20 @@ interface GameConfigFile {
     chanceIncrementPct: number;
     maxChancePct: number;
   };
+  bonusLevel: {
+    everyNLevels: number;
+    gemSpawnMultiplier: number;
+    warpDurationSec: number;
+    speedRampPerSec: number;
+    maxSpeedRamp: number;
+    spawnIntervalRampPerSec: number;
+    minSpawnInterval: number;
+    enemyIntervalStartSec: number;
+    enemyIntervalMinSec: number;
+    enemyIntervalRampPerSec: number;
+    themeColor: string;
+    fogColor: string;
+  };
   movingAsteroids: {
     unlockLevel: number;
     spawnChance: number;
@@ -255,6 +269,48 @@ export const getBombChancePct = (level: number): number => {
   const raw = CONFIG.bomb.baseChancePct + (level - CONFIG.bomb.startLevel) * CONFIG.bomb.chanceIncrementPct;
   return Math.min(CONFIG.bomb.maxChancePct, raw);
 };
+
+// ---------------------------------------------------------------------------
+// Bonus rift sectors
+// ---------------------------------------------------------------------------
+export const BONUS_LEVEL_CONFIG = {
+  everyNLevels: CONFIG.bonusLevel.everyNLevels,
+  gemSpawnMultiplier: CONFIG.bonusLevel.gemSpawnMultiplier,
+  warpDurationSec: CONFIG.bonusLevel.warpDurationSec,
+  speedRampPerSec: CONFIG.bonusLevel.speedRampPerSec,
+  maxSpeedRamp: CONFIG.bonusLevel.maxSpeedRamp,
+  spawnIntervalRampPerSec: CONFIG.bonusLevel.spawnIntervalRampPerSec,
+  minSpawnInterval: CONFIG.bonusLevel.minSpawnInterval,
+  enemyIntervalStartSec: CONFIG.bonusLevel.enemyIntervalStartSec,
+  enemyIntervalMinSec: CONFIG.bonusLevel.enemyIntervalMinSec,
+  enemyIntervalRampPerSec: CONFIG.bonusLevel.enemyIntervalRampPerSec,
+  themeColor: CONFIG.bonusLevel.themeColor,
+  themeColorHex: hexToNumber(CONFIG.bonusLevel.themeColor),
+  fogColor: CONFIG.bonusLevel.fogColor,
+  fogColorHex: hexToNumber(CONFIG.bonusLevel.fogColor)
+};
+
+/**
+ * True when clearing `clearedLevel` should tear open a bonus rift instead of
+ * warping straight on to the next normal sector.
+ */
+export const isRiftDueAfterLevel = (clearedLevel: number): boolean =>
+  BONUS_LEVEL_CONFIG.everyNLevels > 0 && clearedLevel % BONUS_LEVEL_CONFIG.everyNLevels === 0;
+
+/** Extra scroll speed the rift has accumulated after `elapsedSec` inside it. */
+export const getRiftSpeedRamp = (elapsedSec: number): number =>
+  Math.min(BONUS_LEVEL_CONFIG.maxSpeedRamp, elapsedSec * BONUS_LEVEL_CONFIG.speedRampPerSec);
+
+/** Obstacle spawn-interval (frames) the rift has shaved off after `elapsedSec`. */
+export const getRiftSpawnIntervalReduction = (elapsedSec: number): number =>
+  elapsedSec * BONUS_LEVEL_CONFIG.spawnIntervalRampPerSec;
+
+/** Seconds between rift enemy spawns after `elapsedSec` inside the rift. */
+export const getRiftEnemyInterval = (elapsedSec: number): number =>
+  Math.max(
+    BONUS_LEVEL_CONFIG.enemyIntervalMinSec,
+    BONUS_LEVEL_CONFIG.enemyIntervalStartSec - elapsedSec * BONUS_LEVEL_CONFIG.enemyIntervalRampPerSec
+  );
 
 // ---------------------------------------------------------------------------
 // Moving asteroids

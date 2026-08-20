@@ -7,12 +7,17 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   AUTO_CANNON_RELOAD_SEC,
+  BONUS_LEVEL_CONFIG,
   DIFFICULTY_ALGORITHM,
   DIFFICULTY_SETTINGS,
   getBombChancePct,
   getEnemySpawnSchedule,
   getLevelDuration,
   getMovingAsteroidSpeed,
+  getRiftEnemyInterval,
+  getRiftSpawnIntervalReduction,
+  getRiftSpeedRamp,
+  isRiftDueAfterLevel,
   MOVING_ASTEROID_CONFIG,
   pickEnemyVariant,
   MODULE_MAX_TIER,
@@ -26,7 +31,17 @@ import {
   SHIPS_CONFIG
 } from '../constants/gameConfig';
 import { soundManager } from '../audio/soundManager';
-import { Bounds, DifficultyKey, GameEngineCallbacks, GameState, ModuleType, ShipColorKey, ShipModelId } from '../types/game';
+import {
+  Bounds,
+  DifficultyKey,
+  GameEngineCallbacks,
+  GameState,
+  ModuleType,
+  RiftPhase,
+  RiftStatus,
+  ShipColorKey,
+  ShipModelId
+} from '../types/game';
 import { Starfield } from './Starfield';
 import { PlayerShip } from './PlayerShip';
 import { ObstaclePair3D } from './AsteroidField';
@@ -73,6 +88,22 @@ export class GameEngine {
   // shop is available in, and the span the ship's lunge is fitted to.
   private static readonly WARP_DURATION = 5.0;
   private warpTimer = 0;
+
+  // --- Bonus rift sector (alternate reality, every Nth cleared sector) ---
+  /** True from the breach warp until the rift has fully collapsed. */
+  public isRiftLevel = false;
+  private riftPhase: RiftPhase = 'idle';
+  /** Counts down the reality-breach warp in and the collapse warp out. */
+  private riftWarpTimer = 0;
+  /** Seconds survived inside the rift. Drives every rift ramp. */
+  private riftElapsed = 0;
+  /** Gems banked inside the rift, reported separately from the run total. */
+  private riftGems = 0;
+  private riftEnemyTimer = 0;
+  /** Normal sector the flight resumes at once the rift collapses. */
+  private riftResumeLevel = 1;
+  /** Set while the ordinary sector warp is playing out toward a rift. */
+  private pendingRift = false;
 
   // 3-Second Death explosion sequence
   private deathTimer = 0;
@@ -146,6 +177,7 @@ export class GameEngine {
 
     this.initThree();
     this.initInputs();
+    this.starfield.setRiftThemeColor(BONUS_LEVEL_CONFIG.themeColorHex);
     this.setDifficulty('normal');
     this.setShipColor('blue');
     this.setShipModel('dart');
@@ -467,9 +499,11 @@ export class GameEngine {
   public setDifficulty(diffKey: DifficultyKey): void {
     this.currentDifficulty = diffKey;
     const config = DIFFICULTY_SETTINGS[diffKey] || DIFFICULTY_SETTINGS.normal;
-    this.themeLight.color.setHex(config.themeColorHex);
     this.starfield.setThemeColor(config.themeColorHex);
     this.obstacles.forEach((o) => o.setThemeColor(config.themeColorHex));
+    // Inside a rift the alternate reality owns the ambient colouring, so let it
+    // win over the difficulty theme rather than flickering back to normal space.
+    this.applyRealityTheme(this.isRiftLevel);
     // EASY hands out a free reflect charge, so the shell has to be re-rated
     // whenever the difficulty changes (including on the title screen).
     this.applyShieldChargeBonuses();
@@ -779,6 +813,7 @@ export class GameEngine {
 
     this.starfield.setWarping(false);
     this.player.setWarping(false);
+    this.resetRiftState();
 
     this.clearObstaclesAndGems();
     this.particleSystem.clear();
@@ -817,6 +852,7 @@ export class GameEngine {
     this.deathTimer = 0;
     this.starfield.setWarping(false);
     this.player.setWarping(false);
+    this.resetRiftState();
     this.player.reset(this.bounds);
   }
 
@@ -855,6 +891,14 @@ export class GameEngine {
     this.warpTimer = GameEngine.WARP_DURATION; // shop is available during this window
     this.clearProjectiles();
 
+    // Every Nth cleared sector tears a rift open instead of leading to the next
+    // one. Flagged here so the warp banner can warn the player before arrival.
+    this.pendingRift = isRiftDueAfterLevel(this.level);
+    if (this.pendingRift) {
+      this.riftResumeLevel = this.level + 1;
+      this.setRiftPhase('pending');
+    }
+
     this.starfield.setWarping(true);
     this.player.setWarping(true);
 
@@ -873,6 +917,220 @@ export class GameEngine {
     const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
     this.particleSystem.createShockwave(this.player.x, this.player.y, 0, shipConfig.colorHex);
     this.particleSystem.createExplosion(this.player.x, this.player.y, 0, 0x38bdf8, 25);
+  }
+
+  // -------------------------------------------------------------------------
+  // Bonus rift sectors
+  //
+  // Cadence: clear sector 5 -> the ordinary warp plays out -> instead of
+  // arriving at sector 6, a reality breach drops the flight into a rift. The
+  // rift is endless and pays double gems; it ends only when the player is
+  // destroyed, which collapses it and resumes the run at sector 6 with
+  // everything earned intact. `this.level` deliberately stays on the cleared
+  // sector for the duration, so every difficulty curve (gaps, bombs, mover
+  // speed, enemy variants) scales to the range the player actually reached.
+  // -------------------------------------------------------------------------
+
+  private setRiftPhase(phase: RiftPhase): void {
+    if (this.riftPhase === phase) return;
+    this.riftPhase = phase;
+    this.emitRiftStatus();
+  }
+
+  /** Last values pushed to React, so the per-frame call can skip no-op renders. */
+  private lastRiftSignature = '';
+
+  private emitRiftStatus(): void {
+    if (!this.callbacks.onRiftStatus) return;
+
+    // The readout only shows whole seconds, so re-render on the second rather
+    // than on every one of the 60 simulation steps it takes to pass.
+    const signature = `${this.riftPhase}|${Math.floor(this.riftElapsed)}|${this.riftGems}|${this.enemies.length}|${this.riftResumeLevel}`;
+    if (signature === this.lastRiftSignature) return;
+    this.lastRiftSignature = signature;
+
+    const status: RiftStatus = {
+      phase: this.riftPhase,
+      elapsedSec: this.riftElapsed,
+      gems: this.riftGems,
+      hostiles: this.enemies.length,
+      resumeLevel: this.riftResumeLevel
+    };
+    this.callbacks.onRiftStatus(status);
+  }
+
+  /** Drops every rift flag. Called from startGame and goToTitleScreen. */
+  private resetRiftState(): void {
+    this.isRiftLevel = false;
+    this.pendingRift = false;
+    this.riftWarpTimer = 0;
+    this.riftElapsed = 0;
+    this.riftGems = 0;
+    this.riftEnemyTimer = 0;
+    this.riftResumeLevel = 1;
+    this.riftPhase = 'idle';
+    this.starfield.setRiftActive(false);
+    this.starfield.setRiftWarping(false);
+    this.applyRealityTheme(false);
+    this.emitRiftStatus();
+  }
+
+  /**
+   * Swaps the scene's ambient colouring between normal space and a rift. The
+   * fog tint and theme light do the heavy lifting: together with the starfield
+   * palette they make the rift unmistakably somewhere else.
+   */
+  private applyRealityTheme(rift: boolean): void {
+    const config = DIFFICULTY_SETTINGS[this.currentDifficulty] || DIFFICULTY_SETTINGS.normal;
+    const fog = this.scene.fog as THREE.FogExp2 | null;
+    if (fog) {
+      fog.color.setHex(rift ? BONUS_LEVEL_CONFIG.fogColorHex : 0x010208);
+      // A denser rift void swallows distant rocks sooner, tightening the read.
+      fog.density = rift ? 0.0026 : 0.0018;
+    }
+    this.themeLight.color.setHex(rift ? BONUS_LEVEL_CONFIG.themeColorHex : config.themeColorHex);
+  }
+
+  /** Begins the reality-breach warp that carries the flight into a rift. */
+  private enterRift(): void {
+    soundManager.playWarpSound();
+    this.pendingRift = false;
+    this.isRiftLevel = true;
+    this.riftElapsed = 0;
+    this.riftGems = 0;
+    this.riftEnemyTimer = 0;
+    this.levelTimer = 0;
+    this.setRiftPhase('entering');
+
+    this.riftWarpTimer = BONUS_LEVEL_CONFIG.warpDurationSec;
+    this.setGameState('RIFT_WARPING');
+    this.triggerScreenShake(22);
+
+    this.clearObstaclesAndGems();
+    this.starfield.setRiftActive(true);
+    this.starfield.setRiftWarping(true);
+    this.player.setWarping(true);
+    this.applyRealityTheme(true);
+
+    this.particleSystem.createShockwave(this.player.x, this.player.y, 0, BONUS_LEVEL_CONFIG.themeColorHex);
+    this.particleSystem.createExplosion(
+      this.player.x,
+      this.player.y,
+      0,
+      BONUS_LEVEL_CONFIG.themeColorHex,
+      40
+    );
+  }
+
+  /** The breach warp has landed: the endless rift run starts here. */
+  private beginRiftRun(): void {
+    soundManager.playLevelUpSound();
+    this.setRiftPhase('running');
+    this.setGameState('PLAYING');
+    this.starfield.setRiftWarping(false);
+    this.player.setWarping(false);
+    this.player.triggerShieldPowerUp();
+    this.triggerScreenShake(14);
+
+    // A rift has no schedule; enemies arrive on their own tightening interval.
+    this.enemySpawnSchedule = [];
+    this.riftEnemyTimer = 0;
+    this.levelTimer = 0;
+    this.lastThreatCount = -1;
+    this.emitThreatCount();
+
+    if (this.callbacks.onFloatText) {
+      this.callbacks.onFloatText(
+        'THE RIFT — 2x GEMS! SURVIVE!',
+        this.player.x,
+        this.player.y + 25,
+        BONUS_LEVEL_CONFIG.themeColor
+      );
+    }
+  }
+
+  /**
+   * The player was destroyed inside the rift. That is not a run-ending death:
+   * the rift folds up and the flight is thrown back into normal space.
+   */
+  private collapseRift(): void {
+    soundManager.playWarpSound();
+    this.setRiftPhase('collapsing');
+    this.riftWarpTimer = BONUS_LEVEL_CONFIG.warpDurationSec;
+    this.setGameState('RIFT_WARPING');
+    this.triggerScreenShake(20);
+
+    // The death sequence decayed the scroll speed to a standstill and hid the
+    // hull. Both are restored here so the collapse warp has something to fly.
+    this.gameSpeed = (DIFFICULTY_SETTINGS[this.currentDifficulty] || DIFFICULTY_SETTINGS.normal).baseSpeed;
+    this.player.reset(this.bounds);
+    this.player.setWarping(true);
+
+    this.clearObstaclesAndGems();
+    this.starfield.setRiftWarping(true);
+  }
+
+  /** Rift collapse complete: resume the normal sector progression. */
+  private returnFromRift(): void {
+    this.isRiftLevel = false;
+    this.setRiftPhase('idle');
+    this.level = this.riftResumeLevel;
+    this.levelTimer = 0;
+    this.riftElapsed = 0;
+    this.riftEnemyTimer = 0;
+
+    this.setGameState('PLAYING');
+    this.starfield.setRiftActive(false);
+    this.starfield.setRiftWarping(false);
+    this.starfield.setWarping(false);
+    this.applyRealityTheme(false);
+    this.player.setWarping(false);
+    this.player.triggerShieldPowerUp();
+    this.setupEnemyScheduleForLevel();
+    this.triggerScreenShake(12);
+
+    const shipConfig = SHIP_COLORS[this.currentShipColor] || SHIP_COLORS.blue;
+    this.particleSystem.createExplosion(this.player.x, this.player.y, 0, shipConfig.colorHex, 35);
+
+    if (this.callbacks.onLevelUp) this.callbacks.onLevelUp(this.level);
+    if (this.callbacks.onLevelProgress) this.callbacks.onLevelProgress(0, getLevelDuration(this.level));
+    if (this.callbacks.onFloatText) {
+      this.callbacks.onFloatText(
+        `BACK IN REAL SPACE — SECTOR ${this.level}!`,
+        this.player.x,
+        this.player.y + 25,
+        '#38bdf8'
+      );
+    }
+  }
+
+  /**
+   * Spawns one interceptor at the right edge. Shared by the normal per-sector
+   * schedule and the rift's own tightening spawn timer.
+   */
+  private spawnEnemyDrone(): void {
+    const startY = (Math.random() - 0.5) * this.bounds.halfHeight * 1.2;
+    const variant = pickEnemyVariant(this.level);
+    const enemy = new EnemyDrone3D(
+      this.scene,
+      this.bounds.halfWidth + 60,
+      startY,
+      this.level,
+      this.gameSpeed,
+      variant
+    );
+    this.enemies.push(enemy);
+    soundManager.playEnemySpawnSound(variant.key);
+
+    if (this.callbacks.onFloatText) {
+      const label =
+        variant.key === 'heavy'
+          ? '⚠️ HEAVY INTERCEPTOR!'
+          : variant.key === 'scout'
+            ? '⚠️ SCOUT INTERCEPTOR!'
+            : '⚠️ ENEMY INTERCEPTOR!';
+      this.callbacks.onFloatText(label, enemy.x - 30, enemy.y, variant.accentColor);
+    }
   }
 
   private clearObstaclesAndGems(): void {
@@ -938,6 +1196,19 @@ export class GameEngine {
         if (!isSafe) break;
       }
 
+      // Reject positions already claimed by a live gem. Matters most in rifts,
+      // where two clusters are laid down per formation and could otherwise stack.
+      if (isSafe) {
+        for (const existing of this.gems) {
+          const dx = pos.x - existing.x;
+          const dy = pos.y - existing.group.position.y;
+          if (dx * dx + dy * dy < 22 * 22) {
+            isSafe = false;
+            break;
+          }
+        }
+      }
+
       if (isSafe) {
         const isBomb = Math.random() * 100 < getBombChancePct(this.level);
         const gem = new Gem3D(this.scene, pos.x, pos.y, isBomb, this.trueVisionActive);
@@ -985,7 +1256,10 @@ export class GameEngine {
 
   private update(dt: number): void {
     // When paused during active gameplay, freeze all simulation but keep rendering
-    if (this.isPaused && (this.gameState === 'PLAYING' || this.gameState === 'WARPING')) {
+    if (
+      this.isPaused &&
+      (this.gameState === 'PLAYING' || this.gameState === 'WARPING' || this.gameState === 'RIFT_WARPING')
+    ) {
       return;
     }
 
@@ -1051,16 +1325,25 @@ export class GameEngine {
     } else if (this.gameState === 'PLAYING') {
       this.player.update(this.gameState, this.keys, this.pointerY, this.isPointerActive, this.bounds, this.gameSpeed);
 
-      // Level Progress Timer (Level 1 = 30s, +5s each subsequent sector)
-      const levelDuration = getLevelDuration(this.level);
-      this.levelTimer += dt;
       this.runTime += dt;
-      if (this.callbacks.onLevelProgress) {
-        this.callbacks.onLevelProgress(this.levelTimer, levelDuration);
-      }
-      if (this.levelTimer >= levelDuration) {
-        this.triggerWarp();
-        return;
+
+      if (this.isRiftLevel) {
+        // A rift is endless: no duration to run out, so nothing ever warps the
+        // player onward. It only ends when they are destroyed. Everything that
+        // would normally scale with the level clock scales with time-in-rift.
+        this.riftElapsed += dt;
+        this.emitRiftStatus();
+      } else {
+        // Level Progress Timer (Level 1 = 30s, +5s each subsequent sector)
+        const levelDuration = getLevelDuration(this.level);
+        this.levelTimer += dt;
+        if (this.callbacks.onLevelProgress) {
+          this.callbacks.onLevelProgress(this.levelTimer, levelDuration);
+        }
+        if (this.levelTimer >= levelDuration) {
+          this.triggerWarp();
+          return;
+        }
       }
 
       const config = DIFFICULTY_SETTINGS[this.currentDifficulty];
@@ -1068,12 +1351,26 @@ export class GameEngine {
       const scoreSteps = Math.floor(this.score / DIFFICULTY_ALGORITHM.SCORE_STEP_FOR_SPEED);
       const scoreSpeedBonus = scoreSteps * DIFFICULTY_ALGORITHM.SCORE_SPEED_MULTIPLIER;
       const levelSpeedBonus = (this.level - 1) * DIFFICULTY_ALGORITHM.LEVEL_SPEED_BONUS;
-      this.gameSpeed = config.baseSpeed + scoreSpeedBonus + levelSpeedBonus;
+      // gameSpeed is rebuilt from scratch every tick, so the rift's creep has to
+      // be an additive term here rather than a one-off assignment.
+      this.gameSpeed =
+        config.baseSpeed +
+        scoreSpeedBonus +
+        levelSpeedBonus +
+        (this.isRiftLevel ? getRiftSpeedRamp(this.riftElapsed) : 0);
 
       this.spawnTimer++;
       const levelIntervalReduction = (this.level - 1) * DIFFICULTY_ALGORITHM.LEVEL_SPAWN_INTERVAL_REDUCTION;
       const scoreIntervalReduction = this.score * DIFFICULTY_ALGORITHM.SCORE_SPAWN_REDUCTION_FACTOR;
-      const interval = Math.max(55, config.spawnInterval - scoreIntervalReduction - levelIntervalReduction);
+      let interval = Math.max(55, config.spawnInterval - scoreIntervalReduction - levelIntervalReduction);
+      if (this.isRiftLevel) {
+        // Rocks keep closing in the longer the rift is survived, past the floor
+        // normal sectors are allowed to reach.
+        interval = Math.max(
+          BONUS_LEVEL_CONFIG.minSpawnInterval,
+          interval - getRiftSpawnIntervalReduction(this.riftElapsed)
+        );
+      }
       if (this.spawnTimer > interval) {
         const startX = this.bounds.halfWidth + 60;
         // After the unlock level, some formations drift vertically. Movers
@@ -1094,8 +1391,13 @@ export class GameEngine {
         );
         this.obstacles.push(obs);
 
-        if (Math.random() < 0.6) {
-          this.spawnGemSafely(obs, startX);
+        // Rifts run the gem pass twice (config), staggered along the formation so
+        // the two clusters read as a trail rather than piling onto each other.
+        const gemPasses = this.isRiftLevel ? Math.max(1, BONUS_LEVEL_CONFIG.gemSpawnMultiplier) : 1;
+        for (let pass = 0; pass < gemPasses; pass++) {
+          if (Math.random() < 0.6) {
+            this.spawnGemSafely(obs, startX + pass * 74);
+          }
         }
 
         this.spawnTimer = 0;
@@ -1201,6 +1503,7 @@ export class GameEngine {
           soundManager.playGemSound();
           this.gemsCollected++;
           this.totalGems++;
+          if (this.isRiftLevel) this.riftGems++;
           this.score += 2;
           if (this.callbacks.onGemsUpdate) this.callbacks.onGemsUpdate(this.gemsCollected, this.totalGems);
           if (this.callbacks.onScoreUpdate) this.callbacks.onScoreUpdate(this.score);
@@ -1219,23 +1522,18 @@ export class GameEngine {
         }
       }
 
-      // Check and spawn scheduled level enemies (Level 2+)
-      if (this.enemySpawnSchedule.length > 0 && this.levelTimer >= this.enemySpawnSchedule[0]) {
-        this.enemySpawnSchedule.shift();
-        const startY = (Math.random() - 0.5) * this.bounds.halfHeight * 1.2;
-        const variant = pickEnemyVariant(this.level);
-        const enemy = new EnemyDrone3D(this.scene, this.bounds.halfWidth + 60, startY, this.level, this.gameSpeed, variant);
-        this.enemies.push(enemy);
-        soundManager.playEnemySpawnSound(variant.key);
-        if (this.callbacks.onFloatText) {
-          const label =
-            variant.key === 'heavy'
-              ? '⚠️ HEAVY INTERCEPTOR!'
-              : variant.key === 'scout'
-                ? '⚠️ SCOUT INTERCEPTOR!'
-                : '⚠️ ENEMY INTERCEPTOR!';
-          this.callbacks.onFloatText(label, enemy.x - 30, enemy.y, variant.accentColor);
+      if (this.isRiftLevel) {
+        // Rifts have no pre-baked schedule. Interceptors arrive on an interval
+        // that keeps shortening for as long as the player stays alive.
+        this.riftEnemyTimer += dt;
+        if (this.riftEnemyTimer >= getRiftEnemyInterval(this.riftElapsed)) {
+          this.riftEnemyTimer = 0;
+          this.spawnEnemyDrone();
         }
+      } else if (this.enemySpawnSchedule.length > 0 && this.levelTimer >= this.enemySpawnSchedule[0]) {
+        // Scheduled level enemies (Level 2+)
+        this.enemySpawnSchedule.shift();
+        this.spawnEnemyDrone();
       }
 
       // Update and check enemy drones
@@ -1424,6 +1722,15 @@ export class GameEngine {
 
       // Warp exit transition
       if (this.warpTimer <= 0) {
+        // Every Nth sector, the jump lands in a rift instead of the next sector.
+        // The sector we were heading to is held in riftResumeLevel and resumed
+        // once the rift collapses.
+        if (this.pendingRift) {
+          this.starfield.setWarping(false);
+          this.enterRift();
+          return;
+        }
+
         this.level++;
         this.levelTimer = 0;
         this.setGameState('PLAYING');
@@ -1441,6 +1748,53 @@ export class GameEngine {
         }
         if (this.callbacks.onFloatText) {
           this.callbacks.onFloatText(`ARRIVED AT SECTOR ${this.level}!`, this.player.x, this.player.y + 25, '#38bdf8');
+        }
+      }
+    } else if (this.gameState === 'RIFT_WARPING') {
+      // Reality-breach warp. Same shape as the sector jump, but it runs on the
+      // rift's own clock and covers both directions: into the rift, and back out
+      // of it when the rift collapses.
+      this.riftWarpTimer -= dt;
+      this.player.warpProgress = THREE.MathUtils.clamp(
+        1 - this.riftWarpTimer / BONUS_LEVEL_CONFIG.warpDurationSec,
+        0,
+        1
+      );
+      this.player.update(this.gameState, this.keys, this.pointerY, this.isPointerActive, this.bounds, this.gameSpeed);
+
+      // Flush anything left in the old reality off screen.
+      for (let i = this.obstacles.length - 1; i >= 0; i--) {
+        const obs = this.obstacles[i];
+        obs.update(this.gameSpeed * 4.2);
+        if (obs.x < -this.bounds.halfWidth - 100) {
+          obs.destroy();
+          this.obstacles.splice(i, 1);
+        }
+      }
+      for (let i = this.gems.length - 1; i >= 0; i--) {
+        const gem = this.gems[i];
+        gem.update(this.gameSpeed * 4.2);
+        if (gem.x < -this.bounds.halfWidth - 50) {
+          gem.destroy();
+          this.gems.splice(i, 1);
+        }
+      }
+      for (let i = this.enemies.length - 1; i >= 0; i--) {
+        const drone = this.enemies[i];
+        drone.x -= this.gameSpeed * 4.2;
+        drone.group.position.x = drone.x;
+        if (drone.x < -this.bounds.halfWidth - 80) {
+          drone.destroy();
+          this.enemies.splice(i, 1);
+        }
+      }
+      this.emitThreatCount();
+
+      if (this.riftWarpTimer <= 0) {
+        if (this.riftPhase === 'collapsing') {
+          this.returnFromRift();
+        } else {
+          this.beginRiftRun();
         }
       }
     } else if (this.gameState === 'DYING') {
@@ -1478,6 +1832,14 @@ export class GameEngine {
 
       // Transition to Game Over screen once 3-second explosion sequence completes
       if (this.deathTimer <= 0) {
+        // Being destroyed inside a rift does not end the run. The rift collapses
+        // instead and the flight carries on from its normal progression, keeping
+        // the score and every gem banked in there.
+        if (this.isRiftLevel) {
+          this.collapseRift();
+          return;
+        }
+
         this.setGameState('GAMEOVER');
         if (this.callbacks.onGameOver) {
           this.callbacks.onGameOver({
@@ -1504,13 +1866,19 @@ export class GameEngine {
       }
     }
 
-    // Warp punches up the bloom for a hyperspace overexposure feel
-    const targetBloom = this.gameState === 'WARPING' ? 1.15 : 0.62;
+    // Warp punches up the bloom for a hyperspace overexposure feel. The rift
+    // sits permanently hotter than normal space, and its breach warp hotter still.
+    const isRiftWarp = this.gameState === 'RIFT_WARPING';
+    const targetBloom =
+      isRiftWarp ? 1.45 : this.gameState === 'WARPING' ? 1.15 : this.isRiftLevel ? 0.88 : 0.62;
     this.bloomPass.strength += (targetBloom - this.bloomPass.strength) * 0.08;
 
     this.gradePass.uniforms.uTime.value = performance.now() * 0.001;
-    // Screen shake also smears the lens fringe for a stronger impact read
-    this.gradePass.uniforms.uAberration.value = 0.0016 + Math.min(this.screenShake, 26) * 0.00022;
+    // Screen shake also smears the lens fringe for a stronger impact read. The
+    // rift adds a standing fringe, so reality itself looks slightly out of register.
+    const realityFringe = isRiftWarp ? 0.0062 : this.isRiftLevel ? 0.0029 : 0.0016;
+    this.gradePass.uniforms.uAberration.value =
+      realityFringe + Math.min(this.screenShake, 26) * 0.00022;
 
     this.composer.render();
   }

@@ -90,6 +90,21 @@ function fillStarAppearance(
   return { colors, scales };
 }
 
+/**
+ * The rift ring tunnel. Each ring is a closed polygon of line segments sitting
+ * on its own Z plane; the whole stack marches toward the camera so perspective
+ * turns it into a funnel the ship is falling through. Radius stays constant so
+ * near rings blow past off-frame while far ones converge to a point.
+ */
+const RIFT_RING_COUNT = 16;
+const RIFT_RING_SEGMENTS = 40;
+const RIFT_RING_RADIUS = 300;
+const RIFT_RING_Z_FAR = -700;
+const RIFT_RING_Z_NEAR = 520;
+
+/** Violet wash laid over the far star layer so the rift's void reads as other. */
+const RIFT_FAR_TINT = 0xb98cff;
+
 export class Starfield {
   private scene: THREE.Scene;
   private starSprite: THREE.Texture;
@@ -104,6 +119,19 @@ export class Starfield {
   private warpMaterial: THREE.LineBasicMaterial;
   private warpCount = 90;
   private isWarping = false;
+
+  // Alternate-reality (bonus rift) background state
+  private riftRings: THREE.LineSegments;
+  private riftRingMaterial: THREE.LineBasicMaterial;
+  /** Per-ring Z and radius jitter, kept out of the vertex buffer's way. */
+  private riftRingZ: number[] = [];
+  private riftRingScale: number[] = [];
+  private riftRoll = 0;
+  private isRiftActive = false;
+  private isRiftWarping = false;
+  /** The difficulty theme colour to restore when the rift closes. */
+  private normalThemeHex = 0x38bdf8;
+  private riftThemeHex = 0xc084fc;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
@@ -213,19 +241,120 @@ export class Starfield {
     // otherwise-invisible horizontal lines (e.g. through the shield dome).
     this.warpLines.visible = false;
     this.scene.add(this.warpLines);
+
+    // Rift ring tunnel. Built once and parked invisible; only bonus rifts and
+    // the breach warp ever switch it on.
+    const ringGeo = new THREE.BufferGeometry();
+    const ringPositions = new Float32Array(RIFT_RING_COUNT * RIFT_RING_SEGMENTS * 6);
+    for (let r = 0; r < RIFT_RING_COUNT; r++) {
+      // Spread the stack evenly from the far plane to just past the camera.
+      this.riftRingZ[r] =
+        RIFT_RING_Z_FAR + ((RIFT_RING_Z_NEAR - RIFT_RING_Z_FAR) * r) / RIFT_RING_COUNT;
+      this.riftRingScale[r] = 0.82 + Math.random() * 0.36;
+    }
+    ringGeo.setAttribute('position', new THREE.BufferAttribute(ringPositions, 3));
+    this.riftRingMaterial = new THREE.LineBasicMaterial({
+      color: this.riftThemeHex,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      // The rift runs a denser fog than normal space, which would swallow the far
+      // half of the tunnel and cost it its sense of depth. Perspective alone does
+      // the falloff here.
+      fog: false
+    });
+    this.riftRings = new THREE.LineSegments(ringGeo, this.riftRingMaterial);
+    this.riftRings.visible = false;
+    this.scene.add(this.riftRings);
+    this.writeRiftRings();
+  }
+
+  /**
+   * Rewrites every ring's vertices from the current Z / roll state. Rings are
+   * regular polygons, so the whole stack is one buffer write per frame.
+   */
+  private writeRiftRings(): void {
+    const pos = this.riftRings.geometry.attributes.position.array as Float32Array;
+    const step = (Math.PI * 2) / RIFT_RING_SEGMENTS;
+
+    for (let r = 0; r < RIFT_RING_COUNT; r++) {
+      const z = this.riftRingZ[r];
+      // Alternate the roll direction per ring so the tunnel visibly counter-rotates.
+      const spin = this.riftRoll * (r % 2 === 0 ? 1 : -1) + r * 0.21;
+      const radius = RIFT_RING_RADIUS * this.riftRingScale[r];
+      const base = r * RIFT_RING_SEGMENTS * 6;
+
+      for (let s = 0; s < RIFT_RING_SEGMENTS; s++) {
+        const a0 = spin + s * step;
+        const a1 = spin + (s + 1) * step;
+        // Squash one axis slightly so rings read as a torn membrane, not a pipe.
+        const i = base + s * 6;
+        pos[i] = Math.cos(a0) * radius;
+        pos[i + 1] = Math.sin(a0) * radius * 0.86;
+        pos[i + 2] = z;
+        pos[i + 3] = Math.cos(a1) * radius;
+        pos[i + 4] = Math.sin(a1) * radius * 0.86;
+        pos[i + 5] = z;
+      }
+    }
+    this.riftRings.geometry.attributes.position.needsUpdate = true;
   }
 
   public setThemeColor(colorHex: number): void {
-    if (this.nearMaterial) {
-      this.nearMaterial.color.setHex(colorHex);
-    }
-    if (this.warpMaterial) {
-      this.warpMaterial.color.setHex(colorHex);
-    }
+    this.normalThemeHex = colorHex;
+    this.applyPalette();
+  }
+
+  /**
+   * Repaints the star layers and streaks for whichever reality we are in. The
+   * difficulty theme still owns normal space; a rift overrides it wholesale so
+   * the player can tell at a glance that this is somewhere else.
+   */
+  private applyPalette(): void {
+    const accent = this.isRiftActive || this.isRiftWarping ? this.riftThemeHex : this.normalThemeHex;
+    this.nearMaterial.color.setHex(accent);
+    this.warpMaterial.color.setHex(accent);
+    this.riftRingMaterial.color.setHex(this.riftThemeHex);
+    // Far stars carry the base wash: neutral white in normal space, violet in a rift.
+    this.farMaterial.color.setHex(this.isRiftActive || this.isRiftWarping ? RIFT_FAR_TINT : 0xffffff);
+  }
+
+  /** Overrides the rift accent colour (kept in config alongside the fog tint). */
+  public setRiftThemeColor(colorHex: number): void {
+    this.riftThemeHex = colorHex;
+    this.applyPalette();
   }
 
   public setWarping(warping: boolean): void {
     this.isWarping = warping;
+  }
+
+  /** True for as long as the flight is inside a bonus rift, warps included. */
+  public setRiftActive(active: boolean): void {
+    if (this.isRiftActive === active) return;
+    this.isRiftActive = active;
+    if (active) {
+      this.riftRings.visible = true;
+    }
+    this.applyPalette();
+  }
+
+  /**
+   * The reality-breach warp itself: the ring tunnel slams past at speed and the
+   * streaks come along for the ride. Distinct from setWarping, which is the
+   * ordinary between-sectors hyperspace jump.
+   */
+  public setRiftWarping(warping: boolean): void {
+    this.isRiftWarping = warping;
+    // The breach borrows the star-streak machinery, so it owns that flag for the
+    // duration and has to hand it back — otherwise the streaks would still be
+    // screaming past once the rift run begins.
+    this.isWarping = warping;
+    if (warping) {
+      this.riftRings.visible = true;
+    }
+    this.applyPalette();
   }
 
   public update(speed: number): void {
@@ -289,12 +418,52 @@ export class Starfield {
         this.warpLines.visible = false;
       }
     }
+
+    this.updateRiftRings(speed);
+  }
+
+  /**
+   * Advances the rift tunnel. It tears past at speed during the breach warp and
+   * then settles into a slow, ever-present drift for as long as the rift lasts,
+   * which is what keeps the bonus sector reading as a different place.
+   */
+  private updateRiftRings(speed: number): void {
+    const targetOpacity = this.isRiftWarping ? 0.9 : this.isRiftActive ? 0.26 : 0;
+
+    if (targetOpacity > this.riftRingMaterial.opacity) {
+      this.riftRingMaterial.opacity = Math.min(targetOpacity, this.riftRingMaterial.opacity + 0.06);
+    } else {
+      this.riftRingMaterial.opacity = Math.max(targetOpacity, this.riftRingMaterial.opacity - 0.035);
+    }
+
+    if (this.riftRingMaterial.opacity <= 0) {
+      this.riftRings.visible = false;
+      return;
+    }
+    this.riftRings.visible = true;
+
+    const advance = this.isRiftWarping ? speed * 9 + 42 : speed * 2.4;
+    this.riftRoll += this.isRiftWarping ? 0.022 : 0.0035;
+
+    const span = RIFT_RING_Z_NEAR - RIFT_RING_Z_FAR;
+    for (let r = 0; r < RIFT_RING_COUNT; r++) {
+      this.riftRingZ[r] += advance;
+      if (this.riftRingZ[r] > RIFT_RING_Z_NEAR) {
+        // Wrap by the full span so the stack keeps its even spacing at any speed.
+        this.riftRingZ[r] -= span;
+        this.riftRingScale[r] = 0.82 + Math.random() * 0.36;
+      }
+    }
+    this.writeRiftRings();
   }
 
   public destroy(): void {
     this.scene.remove(this.farPoints);
     this.scene.remove(this.nearPoints);
     this.scene.remove(this.warpLines);
+    this.scene.remove(this.riftRings);
+    this.riftRings.geometry.dispose();
+    this.riftRingMaterial.dispose();
     this.farPoints.geometry.dispose();
     this.farMaterial.dispose();
     this.nearPoints.geometry.dispose();

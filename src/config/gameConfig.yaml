@@ -112,6 +112,45 @@ bomb:
   maxChancePct: 25
 
 # ---------------------------------------------------------------------------
+# Bonus "rift" sectors — an alternate reality the flight is pulled into after
+# every `everyNLevels` normal sectors, instead of warping straight to the next
+# one. A rift has no duration: it runs until the player is destroyed, ramping
+# speed and enemy pressure the whole way, and it pays out double gems.
+#
+# Being destroyed inside a rift is NOT a run-ending death. The rift collapses,
+# everything earned is kept, and the flight resumes at the normal sector it was
+# heading to. Difficulty inside the rift is scaled off the sector the player had
+# reached, so a rift at sector 20 is a sector-20-grade fight.
+# ---------------------------------------------------------------------------
+bonusLevel:
+  # A rift opens after clearing every Nth sector (5 -> after 5, 10, 15, ...).
+  everyNLevels: 5
+  # Gem-cluster spawn passes per obstacle formation. 2 = twice the gems of a
+  # normal sector in the same level range.
+  gemSpawnMultiplier: 2
+  # Length (seconds) of the rift warp-in and of the rift collapse warp-out.
+  warpDurationSec: 4.0
+  # Scroll speed added per second spent in the rift (a slow, relentless ramp).
+  speedRampPerSec: 0.02
+  # Ceiling on that added speed, so the rift stays survivable indefinitely.
+  maxSpeedRamp: 4.0
+  # Obstacle spawn-interval tightening (frames) per second spent in the rift.
+  spawnIntervalRampPerSec: 0.35
+  # Floor for the rift's obstacle spawn interval (frames). Tighter than the
+  # 55-frame floor normal sectors clamp to, so rifts get genuinely dense.
+  minSpawnInterval: 42
+  # Seconds between enemy spawns the moment the rift opens.
+  enemyIntervalStartSec: 9.0
+  # Shortest the enemy spawn interval ever gets (seconds).
+  enemyIntervalMinSec: 2.2
+  # How much the enemy spawn interval shortens per second spent in the rift.
+  enemyIntervalRampPerSec: 0.06
+  # Alternate-reality accent: near stars, warp streaks and the rift ring tunnel.
+  themeColor: "#c084fc"
+  # Deep-space fog colour inside a rift (normal space is a near-black #010208).
+  fogColor: "#170a2e"
+
+# ---------------------------------------------------------------------------
 # Ship module addons (in-run only; purchased from the Shop with gems)
 # ---------------------------------------------------------------------------
 modules:
